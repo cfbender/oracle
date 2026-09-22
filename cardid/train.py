@@ -27,7 +27,7 @@ from tqdm import tqdm
 from . import RUNS_DIR
 from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
 from .evaluate import cosine_topk, embed_images
-from .model import ArcFaceHead, Embedder, info_nce
+from .model import ArcFaceHead, Embedder, describe_device, info_nce, pick_device
 from .real import RealDataset, load_labels, real_eval_queries
 
 
@@ -47,11 +47,9 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--backbone-lr", type=float, default=3e-4)
     parser.add_argument("--temperature", type=float, default=0.05)
-    # Augmentation and the model's forward/backward run concurrently, so split the cores
-    # between them rather than giving both the full count.
-    cores = os.cpu_count() or 8
-    parser.add_argument("--workers", type=int, default=max(2, cores // 2), help="augmentation worker processes")
-    parser.add_argument("--threads", type=int, default=max(2, cores - cores // 2), help="torch intra-op threads")
+    parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
+    parser.add_argument("--workers", type=int, help="augmentation worker processes (default: half the cores on CPU, all but one on GPU)")
+    parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
     parser.add_argument("--arcface", type=float, default=0.0, help="weight of the ArcFace class loss (0 disables)")
     parser.add_argument("--resume")
     parser.add_argument("--real", action="store_true", help="mix in labeled real captures from data/real")
@@ -63,8 +61,20 @@ def main() -> None:
     cv2.setNumThreads(0)
     if args.real and args.arcface > 0:
         parser.error("--real cannot be combined with --arcface (real labels may fall outside the train split)")
+    device = pick_device(args.device)
+    # Augmentation (worker processes) and the model's forward/backward (torch threads) run
+    # concurrently. On CPU they share the cores, so split them; on GPU the model needs almost
+    # no CPU and augmentation is the bottleneck, so it gets nearly everything.
+    cores = os.cpu_count() or 8
+    if device.type == "cuda":
+        workers, threads = max(2, cores - 1), 2
+    else:
+        workers, threads = max(2, cores // 2), max(2, cores - cores // 2)
+    args.workers = args.workers or workers
+    args.threads = args.threads or threads
     torch.set_num_threads(args.threads)
     torch.manual_seed(0)
+    print(f"device: {describe_device(device)}, {args.workers} augmentation workers")
 
     run_dir = RUNS_DIR / args.run
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -87,6 +97,7 @@ def main() -> None:
         worker_init_fn=worker_init,
         drop_last=True,
         persistent_workers=True,
+        pin_memory=device.type == "cuda",
     )
 
     gallery = gallery_images(arts)
@@ -102,7 +113,8 @@ def main() -> None:
     model = Embedder()
     if args.resume:
         model.load_state_dict(torch.load(args.resume, map_location="cpu"))
-    arc = ArcFaceHead(len(train_arts)) if args.arcface > 0 else None
+    model.to(device)
+    arc = ArcFaceHead(len(train_arts)).to(device) if args.arcface > 0 else None
     params = [
         {"params": model.features.parameters(), "lr": args.backbone_lr},
         {"params": model.head.parameters(), "lr": args.lr},
@@ -123,10 +135,11 @@ def main() -> None:
         t0, losses = time.time(), []
         bar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
         for clean, degraded, labels in bar:
-            a = model(clean)
-            b = model(degraded)
+            a = model(clean.to(device, non_blocking=True))
+            b = model(degraded.to(device, non_blocking=True))
             loss = info_nce(a, b, args.temperature)
             if arc is not None:
+                labels = labels.to(device, non_blocking=True)
                 loss = loss + args.arcface * (arc(a, labels) + arc(b, labels)) / 2
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -138,10 +151,12 @@ def main() -> None:
         top1 = quick_eval(model, gallery, queries, targets)
         history.append({"epoch": epoch, "loss": float(np.mean(losses)), "top1": top1, "seconds": time.time() - t0})
         print(json.dumps(history[-1]))
-        torch.save(model.state_dict(), run_dir / "last.pt")
+        # Checkpoints are consumed on CPU (capture, bench, export), so store CPU tensors.
+        state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+        torch.save(state, run_dir / "last.pt")
         if top1 >= best:
             best = top1
-            torch.save(model.state_dict(), run_dir / "best.pt")
+            torch.save(state, run_dir / "best.pt")
         (run_dir / "history.json").write_text(json.dumps(history, indent=2))
     print(f"best top1={best:.3f} -> {run_dir / 'best.pt'}")
 

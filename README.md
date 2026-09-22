@@ -11,10 +11,14 @@ per Scryfall unique artwork (~49k). Adding a set means embedding its art, not re
 
 ```sh
 cd ml
-uv sync                                        # CPU-only torch from the pytorch index
+uv sync --extra cpu                            # CPU-only torch from the pytorch index (see GPU training below)
 uv run python -m cardid.scryfall --train 5000 --eval 1000   # bulk metadata + art_crop sample
 uv run python -m cardid.degrade <art_id>       # visual check of the synthetic webcam degradation
 ```
+
+torch lives in the mutually exclusive `cpu` and `rocm` extras, so `uv sync` needs one of them
+once; later `uv run` calls keep whatever is installed. A plain `uv sync` (no extra) removes
+torch again.
 
 ## Full catalog (bigger machine)
 
@@ -30,6 +34,29 @@ uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full
 The eval split stays the same 1,000 arts, so numbers are comparable with the sample runs;
 the gallery grows to every downloaded art. First `gallery_images` call decodes all JPEGs
 (a few minutes) and caches `data/gallery-<n>.npy` (2.4 GB) for later runs.
+
+## GPU training (AMD RX 9070 XT / ROCm)
+
+`train` and `evaluate` take `--device auto|cpu|cuda` (default `auto`; ROCm exposes AMD GPUs as
+`cuda`). The `rocm` extra installs AMD's own PyTorch wheels for gfx1201 with the ROCm 10.0
+runtime bundled, so nothing but the `amdgpu` kernel driver is needed on the host
+([AMD install page](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html);
+Python 3.11–3.14, Linux only, ~1.5 GB download):
+
+```sh
+uv sync --extra rocm
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+uv run python -m cardid.train --epochs 16 --batch 256 --run full       # prints "device: cuda (...)"
+```
+
+On GPU the model step is no longer the bottleneck, so `--workers` defaults to all cores but
+one and `--threads` to 2; augmentation throughput is what limits batches/s. Checkpoints are
+saved as CPU tensors either way, so `capture`, `bench` and `export` keep running on a
+CPU-only install. `cardid` sets `TORCH_BLAS_PREFER_HIPBLASLT=0` before importing torch
+because AMD lists GPU resets during training on the RX 9070 series as a known issue with the
+hipBLASLt backend; export `TORCH_BLAS_PREFER_HIPBLASLT=1` to try the faster path.
+
+To switch back to CPU wheels on the same machine: `uv sync --extra cpu`.
 
 ## Evaluate
 

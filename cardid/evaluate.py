@@ -23,7 +23,7 @@ import torch
 from .data import cached_eval_queries, gallery_images, load_arts, to_tensor
 from .degrade import PROFILES
 from .hashing import hamming_topk, hash_images
-from .model import Embedder, PretrainedBaseline
+from .model import Embedder, PretrainedBaseline, describe_device, pick_device
 from .real import load_labels, real_eval_queries
 
 WIDTH_BUCKETS = [(56, 80), (80, 110), (110, 141), (141, 10_000)]  # art width in px; 56-79 only occurs in "harsh", 141+ only in real captures
@@ -31,10 +31,12 @@ WIDTH_BUCKETS = [(56, 80), (80, 110), (110, 141), (141, 10_000)]  # art width in
 
 @torch.no_grad()
 def embed_images(model: torch.nn.Module, images: np.ndarray, batch: int = 256) -> np.ndarray:
+    """Embed on whatever device the model lives on; always returns CPU float32 numpy."""
     model.eval()
+    device = next(model.parameters()).device
     out = []
     for i in range(0, len(images), batch):
-        out.append(model(to_tensor(images[i : i + batch])).numpy())
+        out.append(model(to_tensor(images[i : i + batch]).to(device)).cpu().numpy())
     return np.concatenate(out)
 
 
@@ -93,8 +95,10 @@ def main() -> None:
     parser.add_argument("--per-art", type=int, default=3)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="harsh")
     parser.add_argument("--real", action="store_true", help="query with the eval split of labeled real captures instead of synthetic degradation")
+    parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     args = parser.parse_args()
     torch.set_num_threads(os.cpu_count() or 8)
+    device = pick_device(args.device)
 
     arts = load_arts()
     t0 = time.time()
@@ -120,10 +124,11 @@ def main() -> None:
             model = Embedder(pretrained=False)
             model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
             label = f"checkpoint:{args.checkpoint}:{profile}"
+        model.to(device)
         t0 = time.time()
         g = embed_images(model, gallery)
         q = embed_images(model, queries)
-        print(f"embedded in {time.time() - t0:.1f}s")
+        print(f"embedded in {time.time() - t0:.1f}s on {describe_device(device)}")
         idx, sims = cosine_topk(q, g, 5)
         report(idx, sims, targets, infos, label)
 

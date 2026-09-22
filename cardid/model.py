@@ -14,6 +14,23 @@ from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 EMBED_DIM = 128
 
 
+def pick_device(name: str = "auto") -> torch.device:
+    """Resolve the --device flag. ROCm builds expose AMD GPUs through the `cuda` device type, so
+    `cuda` is the right spelling on the RX 9070 XT box as well as on NVIDIA."""
+    if name == "auto":
+        name = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(name)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("--device cuda requested but torch.cuda.is_available() is False (see ml/README.md, GPU training)")
+    return device
+
+
+def describe_device(device: torch.device) -> str:
+    if device.type == "cuda":
+        return f"{device} ({torch.cuda.get_device_name(device)}, torch {torch.__version__})"
+    return f"{device} ({torch.get_num_threads()} threads, torch {torch.__version__})"
+
+
 class Embedder(nn.Module):
     def __init__(self, embed_dim: int = EMBED_DIM, pretrained: bool = True):
         super().__init__()

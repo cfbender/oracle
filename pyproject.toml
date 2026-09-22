@@ -10,21 +10,72 @@ dependencies = [
     "onnx>=1.23.0",
     "opencv-python-headless>=4.9",
     "pillow>=10.3",
+    "tqdm>=4.66",
+]
+
+# torch is selected per machine: `uv sync --extra cpu` (default everywhere, what the orb and
+# the capture tool use) or `uv sync --extra rocm` (AMD RX 9070 XT / gfx1201 training box).
+# The extras conflict, so exactly one must be enabled; `uv run` without --extra installs no torch.
+[project.optional-dependencies]
+cpu = [
     "torch>=2.4",
     "torchvision>=0.19",
-    "tqdm>=4.66",
+]
+rocm = [
+    "torch[device-gfx1201]==2.13.0+rocm10.0.0",
+    "torchvision[device-gfx1201]==0.28.0+rocm10.0.0",
+    # torch's own ROCm-side dependencies. They are listed here only because uv requires every
+    # package with an `extra = "rocm"` source below to be declared in this extra; torch pins
+    # their versions. PyPI only hosts placeholder releases of these names.
+    "amd-torch-device-gfx12-0",
+    "amd-torch-device-gfx1201",
+    "amd-torchvision-device-gfx1201",
+    "rocm",
+    "rocm-bootstrap",
+    "rocm-sdk-core",
+    "rocm-sdk-device-gfx1201",
+    "rocm-sdk-libraries",
+    "triton",
 ]
 
 [tool.uv]
 package = true
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "rocm" },
+    ],
+]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "amd-rocm", extra = "rocm" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "amd-rocm", extra = "rocm" },
+]
+# The ROCm torch wheel's own dependencies (bundled ROCm runtime + gfx1201 kernels) only exist
+# at matching versions on the AMD index, which `explicit = true` otherwise keeps out of play.
+amd-torch-device-gfx12-0 = { index = "amd-rocm", extra = "rocm" }
+amd-torch-device-gfx1201 = { index = "amd-rocm", extra = "rocm" }
+amd-torchvision-device-gfx1201 = { index = "amd-rocm", extra = "rocm" }
+rocm = { index = "amd-rocm", extra = "rocm" }
+rocm-bootstrap = { index = "amd-rocm", extra = "rocm" }
+rocm-sdk-core = { index = "amd-rocm", extra = "rocm" }
+rocm-sdk-device-gfx1201 = { index = "amd-rocm", extra = "rocm" }
+rocm-sdk-libraries = { index = "amd-rocm", extra = "rocm" }
+triton = { index = "amd-rocm", extra = "rocm" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "amd-rocm"
+url = "https://stable.repo.amd.com/rocm/whl-next/"
 explicit = true
 
 [build-system]
