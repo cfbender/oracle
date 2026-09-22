@@ -25,16 +25,22 @@ from torch.utils.data import ConcatDataset, DataLoader
 from tqdm import tqdm
 
 from . import RUNS_DIR
-from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
-from .evaluate import cosine_topk, embed_images
+from .data import PairDataset, art_frames, cached_eval_queries, gallery_images, load_arts, split, worker_init
+from .evaluate import cosine_topk, embed_images, frame_topk
 from .model import ArcFaceHead, Embedder, describe_device, gpu, info_nce, pick_device
 from .real import RealDataset, load_labels, real_eval_queries
 
 
-def quick_eval(model: Embedder, gallery: np.ndarray, queries: np.ndarray, targets: np.ndarray) -> float:
+def quick_eval(model: Embedder, gallery: np.ndarray, queries: np.ndarray, targets: np.ndarray, frames: np.ndarray | None = None) -> float:
+    """Top-1 over the gallery. Synthetic queries are one modern cut each (N x H x W x 3); real
+    captures carry every frame's cut (N x F x H x W x 3) and score each art against the cut
+    for its frame (`frames`), exactly as `evaluate` and `ArtIndex.search` do."""
     g = embed_images(model, gallery)
-    q = embed_images(model, queries)
-    idx, _ = cosine_topk(q, g, 5)
+    q = embed_images(model, queries.reshape(-1, *queries.shape[-3:]))
+    if queries.ndim == 5:
+        idx, _ = frame_topk(q.reshape(*queries.shape[:2], -1), g, frames, 5)
+    else:
+        idx, _ = cosine_topk(q, g, 5)
     model.train()
     return float((idx[:, 0] == targets).mean())
 
@@ -105,9 +111,11 @@ def main() -> None:
     # Subsample queries during training so each epoch's eval is cheap.
     sel = np.random.default_rng(0).choice(len(queries), size=min(1000, len(queries)), replace=False)
     queries, targets = queries[sel], targets[sel]
+    frames = None
     if args.real:
         gallery_index = {a["id"]: i for i, a in enumerate(arts)}
         queries, targets, _ = real_eval_queries(load_labels("eval"), gallery_index)
+        frames = art_frames(arts)
         print(f"selecting best checkpoint by top-1 on {len(queries)} held-out real captures")
 
     model = Embedder()
@@ -125,7 +133,7 @@ def main() -> None:
     steps = args.epochs * len(loader)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[g["lr"] for g in params], total_steps=steps, pct_start=0.1)
 
-    best = quick_eval(model, gallery, queries, targets)
+    best = quick_eval(model, gallery, queries, targets, frames)
     print(f"start: top1={best:.3f} (untrained head)")
     history = []
     for epoch in range(args.epochs):
@@ -148,7 +156,7 @@ def main() -> None:
             losses.append(loss.item())
             bar.set_postfix(loss=f"{np.mean(losses[-20:]):.3f}")
         bar.close()
-        top1 = quick_eval(model, gallery, queries, targets)
+        top1 = quick_eval(model, gallery, queries, targets, frames)
         history.append({"epoch": epoch, "loss": float(np.mean(losses)), "top1": top1, "seconds": time.time() - t0})
         print(json.dumps(history[-1]))
         # Checkpoints are consumed on CPU (capture, bench, export), so store CPU tensors.
