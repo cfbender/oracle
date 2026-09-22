@@ -56,6 +56,12 @@ CPU-only install. `cardid` sets `TORCH_BLAS_PREFER_HIPBLASLT=0` before importing
 because AMD lists GPU resets during training on the RX 9070 series as a known issue with the
 hipBLASLt backend; export `TORCH_BLAS_PREFER_HIPBLASLT=1` to try the faster path.
 
+If an epoch is slower than expected, `uv run python -m cardid.bench_loader --workers 15 8`
+times the augmentation loader, the model step, and the post-epoch eval separately; whichever
+is closest to the training loop's batch/s is the bottleneck. Pipeline experiments must be
+modules like this rather than stdin scripts: Python 3.14 starts DataLoader workers with
+`forkserver`, which re-imports `__main__` from its file path and fails for `<stdin>`.
+
 To switch back to CPU wheels on the same machine: `uv sync --extra cpu`.
 
 ## Evaluate

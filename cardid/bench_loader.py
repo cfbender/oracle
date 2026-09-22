@@ -1,0 +1,117 @@
+"""Where does an epoch's time go? Times the three parts of `cardid.train` in isolation:
+the augmentation DataLoader alone, the model's forward/backward on synthetic batches, and
+the post-epoch `quick_eval` (which is included in the epoch `seconds` train.py reports).
+
+    uv run python -m cardid.bench_loader --workers 15 8 --batch 256
+
+Must be a module (not a stdin script): Python 3.14 starts DataLoader workers with the
+`forkserver` method, which re-imports `__main__` from its file path.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import time
+
+import cv2
+import torch
+from torch.utils.data import DataLoader
+
+from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
+from .degrade import INPUT_SIZE
+from .evaluate import embed_images
+from .model import Embedder, describe_device, info_nce, pick_device
+
+
+def bench_loader(dataset: PairDataset, workers: int, batch: int, batches: int, pin: bool) -> None:
+    loader = DataLoader(
+        dataset,
+        batch_size=batch,
+        shuffle=True,
+        num_workers=workers,
+        worker_init_fn=worker_init,
+        drop_last=True,
+        persistent_workers=True,
+        pin_memory=pin,
+    )
+    it = iter(loader)
+    next(it)  # start the workers and fill the prefetch queue before timing
+    t0 = time.perf_counter()
+    for _ in range(batches):
+        next(it)
+    dt = time.perf_counter() - t0
+    print(f"loader, {workers:2d} workers: {batches / dt:5.2f} batch/s, {batches * batch / dt:6.0f} samples/s")
+    del it, loader
+
+
+def bench_model(device: torch.device, batch: int, steps: int, temperature: float) -> None:
+    model = Embedder(pretrained=False).to(device).train()
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    clean = torch.randn(batch, 3, INPUT_SIZE, INPUT_SIZE, device=device)
+    degraded = torch.randn(batch, 3, INPUT_SIZE, INPUT_SIZE, device=device)
+
+    def step() -> None:
+        loss = info_nce(model(clean), model(degraded), temperature)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+
+    for _ in range(3):
+        step()
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(steps):
+        step()
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    dt = time.perf_counter() - t0
+    print(f"model fwd/bwd on {describe_device(device)}: {steps / dt:5.2f} batch/s, {steps * batch / dt:6.0f} samples/s")
+    return model
+
+
+def bench_eval(model: Embedder, arts: list[dict]) -> None:
+    gallery = gallery_images(arts)
+    queries, _, _ = cached_eval_queries(arts)
+    model.eval()
+    t0 = time.perf_counter()
+    embed_images(model, gallery)
+    t_gallery = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    embed_images(model, queries)
+    t_queries = time.perf_counter() - t0
+    print(f"quick_eval: gallery {len(gallery)} imgs {t_gallery:.1f} s, queries {len(queries)} imgs {t_queries:.1f} s")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workers", type=int, nargs="+", default=[max(2, (os.cpu_count() or 8) - 1)])
+    parser.add_argument("--batch", type=int, default=256)
+    parser.add_argument("--batches", type=int, default=30, help="timed batches per loader configuration")
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--temperature", type=float, default=0.05)
+    parser.add_argument("--skip-loader", action="store_true")
+    parser.add_argument("--skip-model", action="store_true")
+    parser.add_argument("--skip-eval", action="store_true")
+    args = parser.parse_args()
+    cv2.setNumThreads(0)
+    device = pick_device(args.device)
+    torch.set_num_threads(2 if device.type == "cuda" else max(2, (os.cpu_count() or 8) // 2))
+
+    arts = load_arts()
+    dataset = PairDataset(split(arts, "train"))
+    print(f"{len(dataset)} train arts, batch {args.batch}, {len(dataset) // args.batch} batches/epoch")
+
+    if not args.skip_loader:
+        for workers in args.workers:
+            bench_loader(dataset, workers, args.batch, args.batches, pin=device.type == "cuda")
+    model = None
+    if not args.skip_model:
+        model = bench_model(device, args.batch, 20, args.temperature)
+    if not args.skip_eval:
+        bench_eval(model or Embedder(pretrained=False).to(device), arts)
+
+
+if __name__ == "__main__":
+    main()
