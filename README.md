@@ -174,7 +174,17 @@ synthetic validation set (`synth` = after heatmap snapping, `synth_pose` = the r
 so the gap shows what the heatmap buys) and on the held-out real captures (`real` = single
 pass on the click window, `real_e2e` = the two-stage `Detector.locate` capture uses). With
 only a handful of labeled eval captures the `real*` numbers step in coarse increments and are
-mostly noise; grow `data/real` before trusting them. The number that matters
+mostly noise; grow `data/real` before trusting them. When the median is good but the mean is
+not, `inspect_detector` shows what the tail is made of — percentiles, the share of gross
+failures and how many of those are the card turned 90°, whether snapping helped or hurt,
+small vs large cards — and renders the worst validation cases with target, pose, snapped
+prediction and heatmap overlaid:
+
+```sh
+uv run python -m cardid.inspect_detector --checkpoint data/runs/det3/best.pt --out /tmp/worst.png
+```
+
+The number that matters
 is identification accuracy with detector quads instead of the stored ones:
 
 ```sh
