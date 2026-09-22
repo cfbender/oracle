@@ -117,6 +117,8 @@ def real_detector_queries(rows: list[dict], gallery_index: dict[str, int], locat
     card and its 180-degree rotation, since the detector does not know which way is up);
     the caller keeps whichever the recogniser is more confident about."""
     from .detect import art_crop, card_orientations, warp_card
+    from .detector import corner_error
+    from .synth import quad_short
 
     images, targets, infos = [], [], []
     for r in rows:
@@ -128,7 +130,10 @@ def real_detector_queries(rows: list[dict], gallery_index: dict[str, int], locat
         for card in card_orientations(warp_card(crop, quad)):
             images.append(art_crop(card))  # the same cut capture.py makes
         targets.append(gallery_index[r["label"]])
-        infos.append({"width": int(r.get("art_px", 0)), "strong_perspective": False})
+        # how far the detector's corners sit from the labeled ones, in short sides: attributes a miss to the detector or the recogniser
+        labeled = np.float32(r["quad"])
+        quad_err = float(corner_error(quad[None], labeled[None])[0] / quad_short(labeled))
+        infos.append({"width": int(r.get("art_px", 0)), "strong_perspective": False, "capture_id": r["capture_id"], "quad_err": quad_err})
     if not images:
         raise SystemExit(f"no labeled real captures with crops in {LABELS}")
     return np.stack(images), np.array(targets), infos
@@ -143,7 +148,7 @@ def real_eval_queries(rows: list[dict], gallery_index: dict[str, int]) -> tuple[
         card = load_rgb(REAL_DIR / r["capture_id"] / "card.png")
         images.append(art_from_card(card))
         targets.append(gallery_index[r["label"]])
-        infos.append({"width": int(r.get("art_px", 0)), "strong_perspective": False})
+        infos.append({"width": int(r.get("art_px", 0)), "strong_perspective": False, "capture_id": r["capture_id"]})
     if not images:
         raise SystemExit(f"no labeled real captures in {LABELS}")
     return np.stack(images), np.array(targets), infos

@@ -89,6 +89,26 @@ def report(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[d
     return result
 
 
+def print_misses(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[dict], arts: list[dict]) -> None:
+    """One line per wrong real capture: what it was, what came back, how confident, and (with
+    a detector) how far its quad sat from the labeled one. A miss with a quad within a few
+    percent is the recogniser's; one with a quad way off is the detector's."""
+    misses = np.where(idx[:, 0] != targets)[0]
+    if not len(misses):
+        return
+    print(f"misses ({len(misses)}):")
+    for i in misses:
+        truth, got = arts[targets[i]], arts[idx[i, 0]]
+        rank = np.where(idx[i] == targets[i])[0]
+        line = (
+            f"  {infos[i].get('capture_id', i)}: {truth['name']} [{truth['set']}] -> {got['name']} [{got['set']}]"
+            f" sim {sims[i, 0]:.3f} margin {sims[i, 0] - sims[i, 1]:.3f}, truth {'rank ' + str(rank[0] + 1) if len(rank) else 'not in top 5'}"
+        )
+        if "quad_err" in infos[i]:
+            line += f", detector quad {infos[i]['quad_err'] * 100:.1f}% of short side off the label"
+        print(line)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", choices=["dhash", "phash", "pretrained", "checkpoint"], required=True)
@@ -128,6 +148,8 @@ def main() -> None:
         q = hash_images(queries, args.method, args.hash_size)
         idx, sims = hamming_topk(q, g, 5)
         report(idx, sims, targets, infos, f"{args.method}-{args.hash_size * args.hash_size}bit")
+        if args.real:
+            print_misses(idx, sims, targets, infos, arts)
     else:
         if args.method == "pretrained":
             model = PretrainedBaseline()
@@ -148,6 +170,8 @@ def main() -> None:
             pick = sims[:, :, 0].argmax(axis=1)
             idx, sims = idx[np.arange(len(idx)), pick], sims[np.arange(len(sims)), pick]
         report(idx, sims, targets, infos, label)
+        if args.real:
+            print_misses(idx, sims, targets, infos, arts)
 
 
 def classical_locate(crop: np.ndarray, click: tuple[float, float]) -> np.ndarray:
