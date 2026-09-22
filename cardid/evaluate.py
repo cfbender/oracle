@@ -7,6 +7,7 @@ answers, which is what the UI will use to decide between "show card" and "show t
     uv run python -m cardid.evaluate --method phash --hash-size 16
     uv run python -m cardid.evaluate --method pretrained
     uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/<run>/best.pt
+    uv run python -m cardid.evaluate --method checkpoint --checkpoint ... --real   # held-out webcam captures
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from .data import cached_eval_queries, gallery_images, load_arts, to_tensor
 from .degrade import PROFILES
 from .hashing import hamming_topk, hash_images
 from .model import Embedder, PretrainedBaseline
+from .real import load_labels, real_eval_queries
 
-WIDTH_BUCKETS = [(56, 80), (80, 110), (110, 141)]  # simulated art width; 56-79 only occurs in "harsh"
+WIDTH_BUCKETS = [(56, 80), (80, 110), (110, 141), (141, 10_000)]  # art width in px; 56-79 only occurs in "harsh", 141+ only in real captures
 
 
 @torch.no_grad()
@@ -63,7 +65,7 @@ def report(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[d
     for lo, hi in WIDTH_BUCKETS:
         m = (widths >= lo) & (widths < hi)
         if m.any():
-            result["by_width"][f"{lo}-{hi - 1}px"] = float(top1[m].mean())
+            result["by_width"][f"{lo}+px" if hi >= 10_000 else f"{lo}-{hi - 1}px"] = float(top1[m].mean())
 
     # Rejection threshold: smallest margin such that >=99% of accepted answers are right.
     # Coverage tells us how often the UI can show a single confident answer.
@@ -90,14 +92,20 @@ def main() -> None:
     parser.add_argument("--checkpoint")
     parser.add_argument("--per-art", type=int, default=3)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="harsh")
+    parser.add_argument("--real", action="store_true", help="query with the eval split of labeled real captures instead of synthetic degradation")
     args = parser.parse_args()
     torch.set_num_threads(os.cpu_count() or 8)
 
     arts = load_arts()
     t0 = time.time()
     gallery = gallery_images(arts)
-    queries, targets, infos = cached_eval_queries(arts, per_art=args.per_art, profile=args.profile)
-    print(f"[{args.profile}] gallery {len(gallery)} arts, {len(queries)} queries ({time.time() - t0:.0f}s to load)")
+    if args.real:
+        profile = "real"
+        queries, targets, infos = real_eval_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)})
+    else:
+        profile = args.profile
+        queries, targets, infos = cached_eval_queries(arts, per_art=args.per_art, profile=args.profile)
+    print(f"[{profile}] gallery {len(gallery)} arts, {len(queries)} queries ({time.time() - t0:.0f}s to load)")
 
     if args.method in ("dhash", "phash"):
         g = hash_images(gallery, args.method, args.hash_size)
@@ -111,7 +119,7 @@ def main() -> None:
         else:
             model = Embedder(pretrained=False)
             model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
-            label = f"checkpoint:{args.checkpoint}"
+            label = f"checkpoint:{args.checkpoint}:{profile}"
         t0 = time.time()
         g = embed_images(model, gallery)
         q = embed_images(model, queries)

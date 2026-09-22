@@ -1,6 +1,11 @@
 """Fine-tune the embedder with symmetric InfoNCE on (clean, degraded) pairs of train-split arts.
 
     uv run python -m cardid.train --epochs 12 --batch 128 --run m0
+    uv run python -m cardid.train --resume data/runs/full/best.pt --real --epochs 4 --run full-real
+
+`--real` mixes the train split of real webcam captures labeled with `cardid.capture` into
+each epoch (oversampled `--real-repeat` times, lightly augmented), and the best checkpoint is
+then chosen by top-1 on the held-out real captures instead of the synthetic queries.
 
 Checkpoints to data/runs/<run>/{last,best}.pt; "best" is by eval top-1 on a fixed query set
 drawn from the eval split (unseen arts), which is also what evaluate.py reports.
@@ -13,15 +18,17 @@ import json
 import os
 import time
 
+import cv2
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 from tqdm import tqdm
 
 from . import RUNS_DIR
 from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
 from .evaluate import cosine_topk, embed_images
 from .model import ArcFaceHead, Embedder, info_nce
+from .real import RealDataset, load_labels, real_eval_queries
 
 
 def quick_eval(model: Embedder, gallery: np.ndarray, queries: np.ndarray, targets: np.ndarray) -> float:
@@ -47,7 +54,15 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=max(2, cores - cores // 2), help="torch intra-op threads")
     parser.add_argument("--arcface", type=float, default=0.0, help="weight of the ArcFace class loss (0 disables)")
     parser.add_argument("--resume")
+    parser.add_argument("--real", action="store_true", help="mix in labeled real captures from data/real")
+    parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")
     args = parser.parse_args()
+    # The DataLoader forks its workers after the parent may have used OpenCV (loading real
+    # captures). OpenCV's thread pool does not survive fork() and the children deadlock, so
+    # keep the parent's OpenCV single-threaded; torch does the parent's heavy lifting anyway.
+    cv2.setNumThreads(0)
+    if args.real and args.arcface > 0:
+        parser.error("--real cannot be combined with --arcface (real labels may fall outside the train split)")
     torch.set_num_threads(args.threads)
     torch.manual_seed(0)
 
@@ -56,8 +71,16 @@ def main() -> None:
     arts = load_arts()
     train_arts = split(arts, "train")
     dataset = PairDataset(train_arts)
+    train_set = dataset
+    real_sets = []
+    if args.real:
+        # Labels are only consumed by ArcFace, which --real excludes, so index over every art.
+        real_train = RealDataset(load_labels("train"), {a["id"]: i for i, a in enumerate(arts)}, repeat=args.real_repeat)
+        real_sets.append(real_train)
+        print(f"real captures: {len(real_train.rows)} train x{args.real_repeat}, {len(load_labels('eval'))} eval")
+        train_set = ConcatDataset([dataset, real_train])
     loader = DataLoader(
-        dataset,
+        train_set,
         batch_size=args.batch,
         shuffle=True,
         num_workers=args.workers,
@@ -71,6 +94,10 @@ def main() -> None:
     # Subsample queries during training so each epoch's eval is cheap.
     sel = np.random.default_rng(0).choice(len(queries), size=min(1000, len(queries)), replace=False)
     queries, targets = queries[sel], targets[sel]
+    if args.real:
+        gallery_index = {a["id"]: i for i, a in enumerate(arts)}
+        queries, targets, _ = real_eval_queries(load_labels("eval"), gallery_index)
+        print(f"selecting best checkpoint by top-1 on {len(queries)} held-out real captures")
 
     model = Embedder()
     if args.resume:
@@ -90,7 +117,8 @@ def main() -> None:
     print(f"start: top1={best:.3f} (untrained head)")
     history = []
     for epoch in range(args.epochs):
-        dataset.set_epoch(epoch)
+        for ds in [dataset, *real_sets]:
+            ds.set_epoch(epoch)
         model.train()
         t0, losses = time.time(), []
         bar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
@@ -111,7 +139,7 @@ def main() -> None:
         history.append({"epoch": epoch, "loss": float(np.mean(losses)), "top1": top1, "seconds": time.time() - t0})
         print(json.dumps(history[-1]))
         torch.save(model.state_dict(), run_dir / "last.pt")
-        if top1 > best:
+        if top1 >= best:
             best = top1
             torch.save(model.state_dict(), run_dir / "best.pt")
         (run_dir / "history.json").write_text(json.dumps(history, indent=2))

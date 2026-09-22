@@ -1,0 +1,221 @@
+"""Local click-to-identify tool for collecting and labeling real webcam captures.
+
+    uv run python -m cardid.capture --checkpoint data/runs/full/best.pt [--port 8765]
+
+Open http://localhost:8765 in Chrome, allow the camera, and click a card in the live 1080p
+feed. The browser sends a full-resolution crop around the click; the server finds the card
+quad, warps it, cuts the art box, embeds it, and shows the top-5 candidates. Press 1-5 (or
+click a candidate) to confirm, type a name to search when none is right, or press S to skip.
+Shift-drag a rectangle around the card when the automatic quad is wrong or missing.
+
+Everything labeled lands in data/real/ (see `cardid.real`) for `train --real` and
+`evaluate --real`. The page keeps a running top-1/top-5 over what you have labeled.
+
+Stdlib http.server only, so this adds no dependencies; localhost is a secure context for
+getUserMedia in Chrome, so no TLS is needed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import threading
+import time
+import uuid
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import cv2
+import numpy as np
+import torch
+
+from . import ART_DIR
+from .detect import art_crop, card_orientations, find_card_quad, order_corners, rect_to_quad, warp_card
+from .index import ArtIndex
+from .real import load_labels, save_label
+
+PAGE = Path(__file__).with_name("capture.html")
+
+
+class Session:
+    """Server-side state: the index plus captures that are identified but not yet labeled."""
+
+    def __init__(self, checkpoint: Path):
+        self.index = ArtIndex(checkpoint)
+        self.pending: dict[str, dict] = {}
+        self.lock = threading.Lock()
+
+    def identify(self, crop: np.ndarray, click: tuple[float, float], rect: list[float] | None) -> dict:
+        t0 = time.perf_counter()
+        if rect:
+            x0, y0, x1, y1 = rect
+            quad = order_corners(rect_to_quad(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)))
+            source = "manual"
+        else:
+            quad = find_card_quad(crop, click)
+            source = "auto"
+        if quad is None:
+            return {"quad": None, "ms": round((time.perf_counter() - t0) * 1000, 1)}
+        card = warp_card(crop, quad)
+        cards = card_orientations(card)
+        arts = np.stack([art_crop(c) for c in cards])
+        vecs = self.index.embed(arts)
+        results = [self.index.search(v, 5) for v in vecs]
+        best = int(np.argmax([r[0]["similarity"] for r in results]))
+        top = results[best]
+        capture_id = uuid.uuid4().hex[:12]
+        with self.lock:
+            self.pending[capture_id] = {"crop": crop, "quad": quad, "cards": cards, "vecs": vecs, "click": click, "source": source, "top": top}
+            if len(self.pending) > 50:
+                self.pending.pop(next(iter(self.pending)))
+        short = min(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[3] - quad[0]))
+        return {
+            "capture_id": capture_id,
+            "quad": quad.tolist(),
+            "orientation": best * 180,
+            "card_px": round(float(short)),
+            "card_png": png_b64(cards[best]),
+            "candidates": [{"id": a["id"], "name": a["name"], "set": a["set"], "similarity": round(a["similarity"], 3)} for a in top],
+            "margin": round(top[0]["similarity"] - top[1]["similarity"], 3),
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+
+    def label(self, capture_id: str, label: str | None, method: str) -> dict:
+        with self.lock:
+            p = self.pending.pop(capture_id, None)
+        if p is None:
+            raise KeyError(capture_id)
+        if label is None:
+            row = {"label": None, "method": method, "top5": [a["id"] for a in p["top"]]}
+            return save_label(capture_id, row, crop_rgb=p["crop"])
+        # Pick the orientation whose embedding is closest to the labeled art, so a wrong
+        # top-1 on an upside-down card still stores the card the right way up.
+        target = self.index.embeddings[self.index.by_id[label]]
+        best = int(np.argmax(p["vecs"] @ target))
+        quad = p["quad"]
+        short = min(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[3] - quad[0]))
+        row = {
+            "label": label,
+            "method": method,
+            "top5": [a["id"] for a in p["top"]],
+            "top5_sim": [round(a["similarity"], 4) for a in p["top"]],
+            "click": list(p["click"]),
+            "quad": quad.tolist(),
+            "quad_source": p["source"],
+            "orientation": best * 180,
+            "card_px": round(float(short)),
+            "art_px": round(float(short) * 0.84),
+            "checkpoint": str(self.index.checkpoint),
+        }
+        return save_label(capture_id, row, crop_rgb=p["crop"], card_rgb=p["cards"][best])
+
+    def stats(self) -> dict:
+        rows = load_labels()
+        n = len(rows)
+        top1 = sum(r["top5"][0] == r["label"] for r in rows)
+        top5 = sum(r["label"] in r["top5"] for r in rows)
+        return {"labeled": n, "top1": top1, "top5": top5, "train": sum(r["split"] == "train" for r in rows), "eval": sum(r["split"] == "eval" for r in rows)}
+
+    def search(self, q: str) -> list[dict]:
+        q = q.strip().lower()
+        if not q:
+            return []
+        hits = [a for a in self.index.arts if q in a["name"].lower()]
+        hits.sort(key=lambda a: (not a["name"].lower().startswith(q), a["name"], a["set"]))
+        return [{"id": a["id"], "name": a["name"], "set": a["set"]} for a in hits[:30]]
+
+
+def png_b64(rgb: np.ndarray) -> str:
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    return base64.b64encode(buf.tobytes()).decode()
+
+
+def decode_jpeg_b64(data: str) -> np.ndarray:
+    raw = np.frombuffer(base64.b64decode(data.split(",", 1)[-1]), np.uint8)
+    bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError("could not decode image")
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+def make_handler(session: Session):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):  # quiet
+            pass
+
+        def send_json(self, obj, status=HTTPStatus.OK):
+            body = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_bytes(self, body: bytes, ctype: str):
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            if url.path == "/":
+                self.send_bytes(PAGE.read_bytes(), "text/html; charset=utf-8")
+            elif url.path.startswith("/art/"):
+                art_id = url.path[len("/art/") :].removesuffix(".jpg")
+                p = ART_DIR / f"{art_id}.jpg"
+                if art_id in session.index.by_id and p.exists():
+                    self.send_bytes(p.read_bytes(), "image/jpeg")
+                else:
+                    self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            elif url.path == "/stats":
+                self.send_json(session.stats())
+            elif url.path == "/search":
+                self.send_json(session.search(parse_qs(url.query).get("q", [""])[0]))
+            else:
+                self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            try:
+                if self.path == "/identify":
+                    crop = decode_jpeg_b64(body["image"])
+                    click = (float(body["click"][0]), float(body["click"][1]))
+                    self.send_json(session.identify(crop, click, body.get("rect")))
+                elif self.path == "/label":
+                    row = session.label(body["capture_id"], body.get("label"), body.get("method", "confirm"))
+                    self.send_json({"saved": row, "stats": session.stats()})
+                else:
+                    self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            except KeyError as e:
+                self.send_json({"error": f"unknown or expired capture {e}"}, HTTPStatus.GONE)
+            except Exception as e:  # noqa: BLE001 - surface to the page instead of dying
+                self.send_json({"error": f"{type(e).__name__}: {e}"}, HTTPStatus.BAD_REQUEST)
+
+    return Handler
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1")
+    args = parser.parse_args()
+    torch.set_num_threads(2)
+    session = Session(Path(args.checkpoint))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(session))
+    print(f"gallery: {len(session.index.arts)} arts; open http://{args.host}:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

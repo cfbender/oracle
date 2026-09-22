@@ -55,6 +55,37 @@ uv run python -m cardid.bench --checkpoint data/runs/m0/best.pt      # per-click
 uv run python -m cardid.export --checkpoint data/runs/m0/best.pt     # ONNX for browser/server
 ```
 
+## Real webcam captures (label → train → evaluate loop)
+
+`cardid.capture` is the click-to-identify loop without the video call: it opens your camera
+at 1080p in the browser, and every click sends a full-resolution crop to a local server that
+finds the card quad, warps it, cuts the art box, embeds it and shows the top-5. Confirming a
+candidate (or searching the right name) stores the capture under `data/real/` as training
+and evaluation data.
+
+```sh
+uv run python -m cardid.capture --checkpoint data/runs/full/best.pt     # then open http://localhost:8765
+```
+
+Keys: `1`–`5` confirm a candidate, `/` search by name, `S` skip, shift-drag a box around the
+card when the automatic quad is missing or wrong. The header shows running top-1/top-5 over
+what you have labeled and the server/round-trip milliseconds per click. Captures are split
+80/20 into train/eval by a hash of their id, so relabeling never moves a sample.
+
+Quad detection is classical for now (Canny + contour quads containing the click; the
+outermost of the nested card-shaped quads is the card edge, the smallest is the inner frame
+line) and stands in for the M2 detector. The stored `card.png` is the 250×350 warp, so the art
+box can be re-cut with jitter at train time and `ART_BOX` can change without recapturing.
+
+```sh
+uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --real
+uv run python -m cardid.train --resume data/runs/full/best.pt --real --epochs 4 --run full-real
+```
+
+`--real` mixes the train-split captures into every epoch (each repeated `--real-repeat` times,
+default 20, with only light box jitter and colour changes — the camera already supplied the
+resolution loss) and picks `best.pt` by top-1 on the held-out eval-split captures.
+
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 
 Top-1 retrieval accuracy. "Harsh" is the training distribution (56–140 px art, 25% of
