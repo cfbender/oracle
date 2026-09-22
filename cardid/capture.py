@@ -6,7 +6,8 @@ Open http://localhost:8765 in Chrome, allow the camera, and click a card in the 
 feed. The browser sends a full-resolution crop around the click; the server finds the card
 quad, warps it, cuts the art box, embeds it, and shows the top-5 candidates. Press 1-5 (or
 click a candidate) to confirm, type a name to search when none is right, or press S to skip.
-Shift-drag a rectangle around the card when the automatic quad is wrong or missing.
+Shift-click the card's four corners (any starting corner, either way round) when the
+automatic quad is wrong or missing; this works for tilted and tapped cards, unlike a box.
 
 With `--detector`, the quad comes from the learned `cardid.detector` (always returns one);
 without it, from the classical edge finder in `cardid.detect`.
@@ -36,8 +37,8 @@ import numpy as np
 import torch
 
 from . import ART_DIR
-from .detect import art_crop, card_orientations, find_card_quad, order_corners, rect_to_quad, warp_card
-from .detector import Detector
+from .detect import art_crop, card_orientations, find_card_quad, warp_card
+from .detector import Detector, cyclic_order
 from .index import ArtIndex
 from .real import load_labels, save_label
 
@@ -53,11 +54,10 @@ class Session:
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
 
-    def identify(self, crop: np.ndarray, click: tuple[float, float], rect: list[float] | None) -> dict:
+    def identify(self, crop: np.ndarray, click: tuple[float, float], manual_quad: list[list[float]] | None) -> dict:
         t0 = time.perf_counter()
-        if rect:
-            x0, y0, x1, y1 = rect
-            quad = order_corners(rect_to_quad(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)))
+        if manual_quad:
+            quad = cyclic_order(np.float32(manual_quad))
             source = "manual"
         elif self.detector is not None:
             quad = self.detector.locate(crop, click)
@@ -195,7 +195,7 @@ def make_handler(session: Session):
                 if self.path == "/identify":
                     crop = decode_jpeg_b64(body["image"])
                     click = (float(body["click"][0]), float(body["click"][1]))
-                    self.send_json(session.identify(crop, click, body.get("rect")))
+                    self.send_json(session.identify(crop, click, body.get("quad")))
                 elif self.path == "/label":
                     row = session.label(body["capture_id"], body.get("label"), body.get("method", "confirm"))
                     self.send_json({"saved": row, "stats": session.stats()})
