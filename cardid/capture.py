@@ -56,11 +56,12 @@ class Session:
 
     def identify(self, crop: np.ndarray, click: tuple[float, float], manual_quad: list[list[float]] | None) -> dict:
         t0 = time.perf_counter()
+        up_vote = None
         if manual_quad:
             quad = cyclic_order(np.float32(manual_quad))
             source = "manual"
         elif self.detector is not None:
-            quad = self.detector.locate(crop, click)
+            quad, up_vote = self.detector.locate_up(crop, click)
             source = "detector"
         else:
             quad = find_card_quad(crop, click)
@@ -84,7 +85,7 @@ class Session:
         top = results[best]
         capture_id = uuid.uuid4().hex[:12]
         with self.lock:
-            self.pending[capture_id] = {"crop": crop, "quad": quad, "cards": cards, "vecs": vecs, "click": click, "source": source, "top": top}
+            self.pending[capture_id] = {"crop": crop, "quad": quad, "cards": cards, "vecs": vecs, "click": click, "source": source, "top": top, "up_vote": up_vote}
             if len(self.pending) > 50:
                 self.pending.pop(next(iter(self.pending)))
         short = min(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[3] - quad[0]))
@@ -93,10 +94,13 @@ class Session:
             "quad": quad.tolist(),
             "quad_source": source,
             "orientation": best * 180,
+            "up_vote": None if up_vote is None else round(up_vote, 2),
             "card_px": round(float(short)),
             "card_png": png_b64(cards[best]),
-            "candidates": [{"id": a["id"], "name": a["name"], "set": a["set"], "similarity": round(a["similarity"], 3)} for a in top],
+            "candidates": candidates(top),
             "margin": round(top[0]["similarity"] - top[1]["similarity"], 3),
+            # the 180-degree turn, so the UI can flip when the orientation call was wrong
+            "flipped": {"card_png": png_b64(cards[1 - best]), "candidates": candidates(results[1 - best])},
             "ms": round((time.perf_counter() - t0) * 1000, 1),
         }
 
@@ -130,6 +134,7 @@ class Session:
         if p["source"] == "detector":
             # the detector said index 0 was upright; the labeled art says which really was
             row["up_correct"] = best == 0
+            row["up_vote"] = round(p["up_vote"], 3)
         return save_label(capture_id, row, crop_rgb=p["crop"], card_rgb=p["cards"][best])
 
     def stats(self) -> dict:
@@ -155,6 +160,10 @@ class Session:
         hits = [a for a in self.index.arts if q in a["name"].lower()]
         hits.sort(key=lambda a: (not a["name"].lower().startswith(q), a["name"], a["set"]))
         return [{"id": a["id"], "name": a["name"], "set": a["set"]} for a in hits[:30]]
+
+
+def candidates(hits: list[dict]) -> list[dict]:
+    return [{"id": a["id"], "name": a["name"], "set": a["set"], "similarity": round(a["similarity"], 3)} for a in hits]
 
 
 def png_b64(rgb: np.ndarray) -> str:

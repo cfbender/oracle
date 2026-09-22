@@ -322,32 +322,55 @@ class Detector:
         self.model = model.eval()
 
     @torch.no_grad()
-    def predict_window(self, img: np.ndarray, cx: float, cy: float, side: float) -> tuple[np.ndarray, np.ndarray]:
+    def predict_window(self, img: np.ndarray, cx: float, cy: float, side: float, rotations: int = 1) -> tuple[np.ndarray, np.ndarray]:
         """(corners (4x2, image px), up vector (2,)) of the card in the `side`-px square
         centred on (cx, cy). The window is a scaled translation of the image, so a direction
-        in the window is the same direction in the image."""
+        in the window is the same direction in the image.
+
+        With `rotations` > 1 the window is also run turned by multiples of 90 degrees (exact,
+        no resampling) in the same batch and the up vectors are turned back and summed, so
+        the result's length is a vote count (up to `rotations`) and residual bias towards the
+        image's own up cancels. On validation scenes 4 rotations take a single pass from
+        97.3% to 98.3% correct at the refined-pass card size; the corners come from the
+        unrotated window only."""
         win, M = window_around(img, cx, cy, side, DET_INPUT)
-        x = scene_to_input(win)[None].to(self.device)
+        wins = [np.ascontiguousarray(np.rot90(win, k)) for k in range(rotations)]
+        x = torch.stack([scene_to_input(w) for w in wins]).to(self.device)
         quad, _, _, heat, up = self.model(x)
-        quad = quad.cpu().numpy() * DET_INPUT
-        quad = snap_corners(quad, torch.sigmoid(heat)[:, 0].cpu().numpy())[0]
-        Minv = cv2_invert(M)
-        return apply_affine(Minv, quad), up[0].cpu().numpy()
+        quad = quad[:1].cpu().numpy() * DET_INPUT
+        quad = snap_corners(quad, torch.sigmoid(heat[:1])[:, 0].cpu().numpy())[0]
+        up = sum(unrotate_direction(u, k) for k, u in enumerate(up.cpu().numpy()))
+        return apply_affine(cv2_invert(M), quad), up
+
+    def locate_up(self, img: np.ndarray, click: tuple[float, float], refine: bool = True, snap: bool = False, rotations: int = 4) -> tuple[np.ndarray, float]:
+        """`locate` plus the up vote: the length of the summed up vector divided by
+        `rotations`, in [0, 1]; on validation scenes 0.75+ is right 99.7% of the time and
+        below 0.25 only about two thirds."""
+        quad, up = self.predict_window(img, click[0], click[1], SCENE)
+        if refine:
+            # second pass on a window where the card spans ~60% of the input
+            cx, cy, short, _ = fit_card_pose(quad)
+            side = max(short * CARD_ASPECT / 0.6, 64.0)
+            quad, up = self.predict_window(img, cx, cy, side, rotations)
+        if snap:
+            quad = card_rect(*fit_card_pose(quad))
+        return orient_quad(cyclic_order(quad), up), float(np.linalg.norm(up) / (rotations if refine else 1))
 
     def locate(self, img: np.ndarray, click: tuple[float, float], refine: bool = True, snap: bool = False) -> np.ndarray:
         """4x2 float32 quad of the card under `click` in `img` (RGB uint8), in printed order
         (corner 0 is the card's top-left, so `warp_card` yields an upright card). Always
         returns something: a wrong quad still gets the recogniser a guess, which the UI can
         show alongside its alternatives."""
-        quad, up = self.predict_window(img, click[0], click[1], SCENE)
-        if refine:
-            # second pass on a window where the card spans ~60% of the input
-            cx, cy, short, _ = fit_card_pose(quad)
-            side = max(short * CARD_ASPECT / 0.6, 64.0)
-            quad, up = self.predict_window(img, cx, cy, side)
-        if snap:
-            quad = card_rect(*fit_card_pose(quad))
-        return orient_quad(cyclic_order(quad), up)
+        return self.locate_up(img, click, refine, snap)[0]
+
+
+def unrotate_direction(u: np.ndarray, k: int) -> np.ndarray:
+    """Direction `u` predicted in `np.rot90(img, k)` expressed in the unrotated image.
+    rot90 maps pixel (x, y) to (y, W - 1 - x), i.e. direction (dx, dy) to (dy, -dx); this
+    applies the inverse k times."""
+    for _ in range(k % 4):
+        u = np.array([-u[1], u[0]], dtype=np.float32)
+    return u
 
 
 def cv2_invert(M: np.ndarray) -> np.ndarray:

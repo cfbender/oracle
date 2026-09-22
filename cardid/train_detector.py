@@ -86,17 +86,24 @@ def predict_scenes(model: CornerNet, scenes: np.ndarray, device: torch.device, b
     return np.concatenate(snapped), np.concatenate(raw), np.concatenate(ups)
 
 
-def up_accuracy(up: np.ndarray, quads: np.ndarray) -> float:
+REFINED_SHORT = 90  # px of the 256 input: roughly the card size the two-stage locate's second pass sees
+
+
+def up_accuracy(up: np.ndarray, quads: np.ndarray) -> dict:
     """Share of predicted up vectors within 90 degrees of the printed-order target (the
-    decision `orient_quad` makes is exactly this sign)."""
+    decision `orient_quad` makes is exactly this sign), over all validation cards (`up`) and
+    over cards at least REFINED_SHORT px wide (`up_big`), the regime the deployed decision is
+    made in; small, occluded cards dominate the gap between the two."""
     target = up_targets(torch.from_numpy(quads)).numpy()
-    return float(((up * target).sum(axis=1) > 0).mean())
+    right = (up * target).sum(axis=1) > 0
+    big = np.array([quad_short(q) for q in quads]) >= REFINED_SHORT
+    return {"up": round(float(right.mean()), 3), "up_big": round(float(right[big].mean()), 3) if big.any() else None}
 
 
 def eval_scenes(model: CornerNet, scenes: np.ndarray, quads: np.ndarray, device: torch.device, batch: int = 64) -> dict:
     """{"synth": snapped error + up accuracy, "synth_pose": raw pose-head error} on the fixed validation set."""
     snapped, raw, up = predict_scenes(model, scenes, device, batch)
-    return {"synth": {**summarize(snapped, quads), "up": round(up_accuracy(up, quads), 3)}, "synth_pose": summarize(raw, quads)}
+    return {"synth": {**summarize(snapped, quads), **up_accuracy(up, quads)}, "synth_pose": summarize(raw, quads)}
 
 
 @torch.no_grad()

@@ -103,8 +103,9 @@ and evaluation data.
 uv run python -m cardid.capture --checkpoint data/runs/full/best.pt     # then open http://localhost:8765
 ```
 
-Keys: `1`–`5` confirm a candidate, `/` search by name, `S` skip, shift-drag a box around the
-card when the automatic quad is missing or wrong. The header shows running top-1/top-5 over
+Keys: `1`–`5` confirm a candidate, `/` search by name, `S` skip, `F` flip to the other
+orientation's candidates (with `--detector`), shift-drag a box around the card when the
+automatic quad is missing or wrong. The header shows running top-1/top-5 over
 what you have labeled and the server/round-trip milliseconds per click. Captures are split
 80/20 into train/eval by a hash of their id, so relabeling never moves a sample.
 
@@ -163,11 +164,22 @@ approach, embedding both rotations and keeping the more confident one, was the m
 misses on real captures: a text box warped upside down matches a sky or a text-heavy art (White
 Ward, Look at Me I'm R&D) at ~0.67 similarity, more than a real photo of the art matches its
 own scan: on 15 eval captures 4 of the 7 misses had the truth top-1 in the rotation the
-confidence rule rejected (top-1 0.53 against an orientation oracle of 0.80). The trainer reports `up`, the share of validation scenes
-where the vector points into the correct half plane; `capture` still embeds the 180° turn so
-labelling can store `card.png` upright when the detector was wrong, records `up_correct` per
-label and shows the running rate ("up ok"), and `evaluate --real --detector <ckpt>` counts how
-often the up output rejected the rotation in which the truth was top-1.
+confidence rule rejected (top-1 0.53 against an orientation oracle of 0.80).
+
+The trainer reports `up`, the share of validation scenes where the vector points into the
+correct half plane, and `up_big`, the same over cards at least 90 px wide in the 256 px
+input — the size the refined pass of `Detector.locate` sees, so that is the deployed number.
+`up` plateaus around 0.94 because the remainder is small (median 43 px) and occluded cards;
+at 90–140 px the head is wrong on ~3%, at 140+ px on ~1%. The length of the vector is a
+confidence (|up| ≥ 0.85 is right 98.7% of the time, below 0.5 about 75%), so `locate` runs
+the refined window in four exact 90° rotations in one batch (`rotations=4`), turns the ups
+back and sums them: 97.3% → 98.3% right at that size, and `locate_up` returns the vote
+(summed length / rotations; 0.75+ is right 99.7% of the time). The corners come from the
+unrotated window. `capture` shows the vote, still embeds the 180° turn so `F` flips to the
+other orientation's card and candidates when the detector was wrong, stores `card.png`
+upright with `up_correct` and `up_vote` per label and shows the running rate ("up ok"), and
+`evaluate --real --detector <ckpt>` counts how often the up output rejected the rotation in
+which the truth was top-1.
 
 Training data is rendered by `cardid.synth` from full-card images composited onto busy
 backgrounds (random art crops as playmats, flat desks, gradients), with sleeves (a ring

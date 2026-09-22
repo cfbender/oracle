@@ -50,7 +50,7 @@
     <div title="how often the detector's up/down call matched the labeled card"><b id="s-up">–</b><span class="muted">up ok</span></div>
     <div><b id="s-ms">–</b><span class="muted">ms</span></div>
   </div>
-  <div id="status" class="muted">Click a card. <kbd>1</kbd>–<kbd>5</kbd> confirm, <kbd>S</kbd> skip, <kbd>/</kbd> search, shift-click the 4 corners to outline a card manually (<kbd>Esc</kbd> cancels).</div>
+  <div id="status" class="muted">Click a card. <kbd>1</kbd>–<kbd>5</kbd> confirm, <kbd>S</kbd> skip, <kbd>F</kbd> flip the card 180°, <kbd>/</kbd> search, shift-click the 4 corners to outline a card manually (<kbd>Esc</kbd> cancels).</div>
   <img id="card" alt="">
   <div id="cands"></div>
   <input id="q" type="search" placeholder="search by name when none match…" autocomplete="off">
@@ -157,7 +157,24 @@ async function identify(x, y, quad) {
   document.getElementById('card').src = 'data:image/png;base64,' + j.card_png;
   renderCandidates(j.candidates, j.margin);
   drawOverlay();
-  setStatus(`card ≈ ${j.card_px} px wide · margin ${j.margin} · ${j.quad_source === 'detector' ? 'up from detector' : j.orientation ? 'rotated 180° (recogniser pick)' : 'upright (recogniser pick)'}`);
+  showOrientation();
+}
+
+function showOrientation() {
+  const j = current;
+  const how = j.quad_source === 'detector' ? `up from detector (vote ${j.up_vote})` : j.orientation ? 'rotated 180° (recogniser pick)' : 'upright (recogniser pick)';
+  setStatus(`card ≈ ${j.card_px} px wide · margin ${j.margin} · ${how}${j.isFlipped ? ' · flipped by you' : ''} · F flips`);
+}
+
+// swap in the 180-degree turn's card and candidates; labelling stores whichever orientation matches the label anyway
+function flipOrientation() {
+  if (!current || !current.flipped) return;
+  const other = { card_png: current.card_png, candidates: current.candidates };
+  current.card_png = current.flipped.card_png; current.candidates = current.flipped.candidates;
+  current.flipped = other; current.isFlipped = !current.isFlipped;
+  document.getElementById('card').src = 'data:image/png;base64,' + current.card_png;
+  renderCandidates(current.candidates, current.candidates[0].similarity - current.candidates[1].similarity);
+  showOrientation();
 }
 
 function renderCandidates(list, margin) {
@@ -212,6 +229,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && corners.length) { corners = []; drawOverlay(); return setStatus('manual outline cancelled'); }
   if (e.key >= '1' && e.key <= '5' && current) label(current.candidates[+e.key - 1]?.id, 'confirm');
   else if (e.key === 's' || e.key === 'S') label(null, 'skip');
+  else if (e.key === 'f' || e.key === 'F') flipOrientation();
   else if (e.key === '/') { e.preventDefault(); q.focus(); }
 });
 
