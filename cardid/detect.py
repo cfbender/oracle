@@ -38,6 +38,19 @@ FRAME_NAMES = list(FRAMES)
 # representative art aspect (width / height) per frame, for the query-side cut
 FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415}
 HALF_LEFT_LAYOUTS = {"class", "case"}
+# Frame prior. tall/right/left arts are 1-2% of the gallery, but at webcam quality their cuts of
+# an ordinary card are extra lottery tickets: a full-art Plains or a saga beat the truth by 0.01 in
+# real evals while, on clean scans, no rare-frame impostor comes close. Rare-frame candidates must
+# therefore beat the standard-frame ones by this margin (subtracted from their similarity).
+RARE_FRAMES = frozenset({"tall", "right", "left"})
+FRAME_PENALTY = 0.02
+
+
+def frame_penalties(frames: np.ndarray, penalty: float = FRAME_PENALTY) -> np.ndarray:
+    """Similarity penalty per gallery art (`frames` indexes FRAME_NAMES): `penalty` for
+    RARE_FRAMES arts, 0 otherwise."""
+    rare = np.array([name in RARE_FRAMES for name in FRAME_NAMES])
+    return np.where(rare[frames], penalty, 0.0).astype(np.float32)
 
 
 def frame_of(aspect: float, layout: str | None = None) -> str:

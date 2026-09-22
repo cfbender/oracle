@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import itertools
 import json
 import threading
 import time
@@ -37,7 +38,13 @@ import numpy as np
 import torch
 
 from . import ART_DIR
-from .detect import art_crops, card_orientations, find_card_quad, warp_card
+from .detect import (
+    FRAME_PENALTY,
+    art_crops,
+    card_orientations,
+    find_card_quad,
+    warp_card,
+)
 from .detector import Detector, cyclic_order
 from .index import ArtIndex
 from .real import load_labels, save_label
@@ -48,8 +55,8 @@ PAGE = Path(__file__).with_name("capture.html")
 class Session:
     """Server-side state: the index plus captures that are identified but not yet labeled."""
 
-    def __init__(self, checkpoint: Path, detector: Path | None = None):
-        self.index = ArtIndex(checkpoint)
+    def __init__(self, checkpoint: Path, detector: Path | None = None, frame_penalty: float = FRAME_PENALTY):
+        self.index = ArtIndex(checkpoint, frame_penalty)
         self.detector = Detector(detector) if detector else None
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
@@ -158,23 +165,35 @@ class Session:
     def search(self, q: str) -> list[dict]:
         """Name search for labelling. Every word must appear in the name, except that a word
         equal to a set code filters by set instead ("forest fin" -> the Final Fantasy Forests),
-        since basics and staples have hundreds of printings."""
+        since basics and staples have hundreds of printings, and a number (or "#280") must
+        equal the collector number, since one set alone can have dozens of Forests."""
         words = q.strip().lower().split()
         if not words:
             return []
         sets = {a["set"] for a in self.index.arts}
         set_words = [w for w in words if w in sets]
-        name_words = [w for w in words if w not in sets]
+        numbers = [w.lstrip("#") for w in words if w not in sets and (w.startswith("#") or w.isdigit())]
+        name_words = [w for w in words if w not in sets and w.lstrip("#") not in numbers]
         # a word that is both a set code and part of the name ("war", "fin") keeps the name meaning too
         hits = [
             a
             for a in self.index.arts
             if (not set_words or a["set"] in set_words or all(w in a["name"].lower() for w in words))
             and all(w in a["name"].lower() for w in name_words)
+            and all(str(a.get("collector_number", "")).lower() == n for n in numbers)
         ]
         prefix = " ".join(name_words)
-        hits.sort(key=lambda a: (not a["name"].lower().startswith(prefix), a["set"] not in set_words, a["name"], a["set"]))
-        return [{"id": a["id"], "name": a["name"], "set": a["set"]} for a in hits[:60]]
+        hits.sort(key=lambda a: (not a["name"].lower().startswith(prefix), a["set"] not in set_words, a["name"], a["set"], collector_key(a)))
+        # a set filter is how the user scrolls one set's printings, so show all of them
+        limit = 400 if set_words else 60
+        return [{"id": a["id"], "name": a["name"], "set": a["set"], "number": a.get("collector_number")} for a in hits[:limit]]
+
+
+def collector_key(art: dict) -> tuple[int, str]:
+    """Sort key putting collector numbers in printed order: 9 before 10, then 10a, 10b."""
+    number = str(art.get("collector_number", ""))
+    digits = "".join(itertools.takewhile(str.isdigit, number))
+    return (int(digits) if digits else 10**9, number[len(digits):])
 
 
 def candidates(hits: list[dict]) -> list[dict]:
@@ -260,9 +279,10 @@ def main() -> None:
     parser.add_argument("--detector", help="CornerNet checkpoint from cardid.train_detector; omit to use the classical edge finder")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--frame-penalty", type=float, default=FRAME_PENALTY, help=f"similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})")
     args = parser.parse_args()
     torch.set_num_threads(2)
-    session = Session(Path(args.checkpoint), Path(args.detector) if args.detector else None)
+    session = Session(Path(args.checkpoint), Path(args.detector) if args.detector else None, args.frame_penalty)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(session))
     locator = f"detector {args.detector}" if args.detector else "classical edge finder"
     print(f"gallery: {len(session.index.arts)} arts; quads from {locator}; open http://{args.host}:{args.port}")

@@ -53,7 +53,7 @@
   <div id="status" class="muted">Click a card. <kbd>1</kbd>–<kbd>5</kbd> confirm, <kbd>S</kbd> skip, <kbd>F</kbd> flip the card 180°, <kbd>/</kbd> search, shift-click the 4 corners to outline a card manually (<kbd>Esc</kbd> cancels).</div>
   <img id="card" alt="">
   <div id="cands"></div>
-  <input id="q" type="search" placeholder="search by name when none match… add a set code to narrow: forest fin" autocomplete="off">
+  <input id="q" type="search" placeholder="search by name when none match… add a set code or collector number to narrow: forest fin 280" autocomplete="off">
   <div id="results"></div>
   <div class="row"><button id="skip">skip (S)</button></div>
 </aside>
@@ -217,7 +217,8 @@ q.addEventListener('input', () => {
     for (const c of list) {
       const d = document.createElement('div');
       d.className = 'cand';
-      d.innerHTML = `<img src="/art/${c.id}.jpg" loading="lazy"><div><div class="name">${esc(c.name)}</div><div class="muted">${c.set.toUpperCase()}</div></div>`;
+      const number = c.number ? ` #${esc(c.number)}` : '';
+      d.innerHTML = `<img src="/art/${c.id}.jpg" loading="lazy"><div><div class="name">${esc(c.name)}</div><div class="muted">${c.set.toUpperCase()}${number}</div></div>`;
       d.onclick = () => label(c.id, 'search');
       results.appendChild(d);
     }

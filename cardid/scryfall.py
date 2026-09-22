@@ -4,10 +4,11 @@ Usage:
     uv run python -m cardid.scryfall --train 5000 --eval 1000   # 6k sample (~25 min at 10 req/s)
     uv run python -m cardid.scryfall --all                       # then everything else as train
     uv run python -m cardid.scryfall --cards 3000                # full-card images for the detector
+    uv run python -m cardid.scryfall --metadata                  # backfill layout/collector_number into an older arts.json
 
 Writes:
     data/unique-artwork.jsonl.gz   raw bulk file
-    data/arts.json                 sampled entries: [{id, name, set, split, url}]
+    data/arts.json                 sampled entries: [{id, oracle_id, name, set, layout, collector_number, split, url}]
     data/art/<id>.jpg              art_crop images
     data/cards/<id>.jpg            `normal` full-card images (488x680) of a random subset
 """
@@ -80,6 +81,7 @@ def usable_entries(bulk: Path) -> list[dict]:
                         "name": card["name"],
                         "set": card["set"],
                         "layout": card["layout"],
+                        "collector_number": card["collector_number"],
                         "url": card["image_uris"]["art_crop"],
                     }
                 )
@@ -97,16 +99,22 @@ def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> li
     return picked
 
 
-def add_layouts(arts: list[dict], entries: list[dict]) -> int:
-    """Backfill `layout` into an arts.json written before it was recorded; returns how many
-    entries changed. The recogniser needs it to tell a saga's right-half art from a class or
-    case card's left-half art (`detect.frame_of`)."""
-    layouts = {e["id"]: e["layout"] for e in entries}
+METADATA_FIELDS = ("layout", "collector_number")
+
+
+def add_metadata(arts: list[dict], entries: list[dict]) -> int:
+    """Backfill METADATA_FIELDS into an arts.json written before they were recorded; returns
+    how many entries changed. The recogniser needs `layout` to tell a saga's right-half art
+    from a class or case card's left-half art (`detect.frame_of`); the capture tool's search
+    shows and matches `collector_number` to pick one of a set's many Forests."""
+    by_id = {e["id"]: e for e in entries}
     changed = 0
     for a in arts:
-        if "layout" not in a and a["id"] in layouts:
-            a["layout"] = layouts[a["id"]]
-            changed += 1
+        e = by_id.get(a["id"])
+        missing = [f for f in METADATA_FIELDS if f not in a and e and f in e]
+        for f in missing:
+            a[f] = e[f]
+        changed += bool(missing)
     return changed
 
 
@@ -165,7 +173,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~49k images, ~3 GB)")
     parser.add_argument("--cards", type=int, help="only download full-card images of this many random train arts into data/cards (~100 KB each)")
-    parser.add_argument("--layouts", action="store_true", help="only backfill the Scryfall layout into an existing data/arts.json (no image downloads)")
+    parser.add_argument("--metadata", "--layouts", action="store_true", help="only backfill Scryfall metadata (layout, collector_number) into an existing data/arts.json (no image downloads)")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -181,12 +189,12 @@ def main() -> None:
         bulk = download_bulk(client, DATA_DIR / "unique-artwork.jsonl.gz")
         arts_path = DATA_DIR / "arts.json"
         arts = json.loads(arts_path.read_text()) if arts_path.exists() else None
-        if args.layouts:
+        if args.metadata:
             if arts is None:
                 raise SystemExit("run the art_crop download first so data/arts.json exists")
-            changed = add_layouts(arts, usable_entries(bulk))
+            changed = add_metadata(arts, usable_entries(bulk))
             arts_path.write_text(json.dumps(arts))
-            print(f"layout added to {changed} of {len(arts)} arts")
+            print(f"metadata ({', '.join(METADATA_FIELDS)}) added to {changed} of {len(arts)} arts")
             return
         if arts is None or args.all:
             entries = usable_entries(bulk)
@@ -194,7 +202,7 @@ def main() -> None:
                 arts = sample_arts(entries, args.train, args.eval, args.seed)
             if args.all:
                 arts = extend_to_all(arts, entries)
-            add_layouts(arts, entries)
+            add_metadata(arts, entries)
             arts_path.write_text(json.dumps(arts))
 
         failed = []

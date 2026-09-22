@@ -23,7 +23,7 @@ import torch
 
 from .data import art_frames, cached_eval_queries, gallery_images, load_arts, to_tensor
 from .degrade import PROFILES
-from .detect import FRAME_NAMES
+from .detect import FRAME_NAMES, FRAME_PENALTY, frame_penalties
 from .detector import Detector
 from .hashing import hamming_topk, hash_images
 from .model import Embedder, PretrainedBaseline, describe_device, pick_device
@@ -55,12 +55,13 @@ def cosine_topk(q: np.ndarray, g: np.ndarray, k: int) -> tuple[np.ndarray, np.nd
     return topk(q @ g.T, k)
 
 
-def frame_topk(q: np.ndarray, g: np.ndarray, frames: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+def frame_topk(q: np.ndarray, g: np.ndarray, frames: np.ndarray, k: int, penalty: float = FRAME_PENALTY) -> tuple[np.ndarray, np.ndarray]:
     """`cosine_topk` for per-frame query embeddings (... x F x D, `detect.FRAME_NAMES` order):
-    each gallery art is scored against the cut for its own frame (`frames`, G ints)."""
+    each gallery art is scored against the cut for its own frame (`frames`, G ints), minus the
+    frame prior (`detect.frame_penalties`), as `index.ArtIndex.search` does."""
     sims = np.einsum("...fd,gd->...fg", q, g)
     sims = np.take_along_axis(sims, np.broadcast_to(frames, sims.shape[:-2] + (1, len(frames))), axis=-2)[..., 0, :]
-    return topk(sims, k)
+    return topk(sims - frame_penalties(frames, penalty), k)
 
 
 def report(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[dict], label: str) -> dict:
@@ -141,6 +142,7 @@ def main() -> None:
         "--detector",
         help="with --real: re-locate the card in each stored crop with this CornerNet checkpoint (or 'classical' for the edge finder) instead of using the stored quad",
     )
+    parser.add_argument("--frame-penalty", type=float, default=FRAME_PENALTY, help=f"with --real: similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})")
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     args = parser.parse_args()
     torch.set_num_threads(os.cpu_count() or 8)
@@ -190,7 +192,7 @@ def main() -> None:
         print(f"embedded in {time.time() - t0:.1f}s on {describe_device(device)}")
         if queries.ndim > 4:
             # real captures carry every frame's cut: score each art against the cut for its frame
-            idx, sims = frame_topk(q.reshape(*queries.shape[:-3], q.shape[-1]), g, frames, 5)
+            idx, sims = frame_topk(q.reshape(*queries.shape[:-3], q.shape[-1]), g, frames, 5, args.frame_penalty)
         else:
             idx, sims = cosine_topk(q, g, 5)
         if per_query > 1:

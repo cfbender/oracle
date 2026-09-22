@@ -16,7 +16,11 @@ read off its image aspect (plus the Scryfall layout for the half-width ones), ev
 embeds all six cuts in one batch, and each art is scored against the cut for its frame
 (`index.frame_similarities`). On clean card scans through the orb model this took sagas from
 0.25 to 1.00 top-1, class cards from 0 to 1.00 and full-art lands from 0.92 to 1.00 with
-modern cards unchanged; the extra cuts cost ~50 ms on the orb CPU.
+modern cards unchanged; the extra cuts cost ~50 ms on the orb CPU. The rare frames (tall,
+saga, class: 1–2% of the gallery) carry a prior: their score is the similarity minus
+`detect.FRAME_PENALTY` (0.02), because at webcam quality a full-art Plains or a saga
+beat the truth by 0.01 in real evals while on clean scans no rare-frame impostor came close.
+`--frame-penalty 0` on `evaluate`/`capture` turns it off for comparison.
 
 ## Setup
 
@@ -38,7 +42,7 @@ is a harder retrieval problem. On a machine with the cores/RAM for it:
 
 ```sh
 uv run python -m cardid.scryfall --all              # +43k art crops as train, ~80 min at 10 req/s
-uv run python -m cardid.scryfall --layouts          # backfill `layout` into an arts.json from before it was recorded (no downloads)
+uv run python -m cardid.scryfall --metadata         # backfill `layout`/`collector_number` into an older arts.json (no downloads)
 uv run python -m cardid.train --epochs 16 --batch 256 --run full   # workers/threads default to the core count
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --profile realistic
 ```
@@ -116,7 +120,8 @@ uv run python -m cardid.capture --checkpoint data/runs/full/best.pt     # then o
 ```
 
 Keys: `1`–`5` confirm a candidate, `/` search by name (add a set code to narrow a basic or
-staple with hundreds of printings: `forest fin`), `S` skip, `F` flip to the other
+staple with hundreds of printings, and a collector number to pick one of a set's many:
+`forest fin`, `forest fin 280`; results show `#number`), `S` skip, `F` flip to the other
 orientation's candidates (with `--detector`), shift-drag a box around the card when the
 automatic quad is missing or wrong. Candidates from a non-modern frame say so ("right art"). The header shows running top-1/top-5 over
 what you have labeled and the server/round-trip milliseconds per click. Captures are split
