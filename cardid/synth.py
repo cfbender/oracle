@@ -368,15 +368,25 @@ def apply_affine(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return (np.c_[pts, np.ones(len(pts))] @ M.T).astype(np.float32)
 
 
+def trusted_quad(row: dict) -> bool:
+    """Whether a labeled capture's quad is tight enough to supervise the detector."""
+    top5 = row.get("top5") or []
+    return row.get("quad_source") == "manual" or (bool(top5) and top5[0] == row.get("label"))
+
+
 class RealSceneDataset(Dataset):
     """Labeled real captures (`data/real/<id>/crop.jpg` + the quad the identification used) as
     detector samples, re-windowed around the click like `render_scene`. With `augment`, the
-    window is randomly rotated, scaled, and shifted so a few hundred captures go further."""
+    window is randomly rotated, scaled, and shifted so a few hundred captures go further.
+
+    Only quads worth learning from are kept: ones the user drew by hand, or automatic ones the
+    recogniser confirmed with a top-1 hit (a loose quad that still identified the card is
+    fine for the embedder but would teach the detector to be loose)."""
 
     def __init__(self, rows: list[dict], repeat: int = 1, augment: bool = True, seed: int = 1):
         from .real import REAL_DIR
 
-        self.rows = [r for r in rows if r.get("quad") and (REAL_DIR / r["capture_id"] / "crop.jpg").exists()]
+        self.rows = [r for r in rows if r.get("quad") and trusted_quad(r) and (REAL_DIR / r["capture_id"] / "crop.jpg").exists()]
         self.dir = REAL_DIR
         self.repeat = repeat
         self.augment = augment
