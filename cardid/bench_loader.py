@@ -112,6 +112,33 @@ def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
     print(f"CornerNet fwd/bwd on {describe_device(device)}: {steps / dt:5.2f} batch/s, {steps * batch / dt:6.0f} samples/s")
 
 
+def _render_worker(args: tuple[int, int]) -> float:
+    """Render `n` scenes in this process; returns the mean ms per scene."""
+    seed, n = args
+    worker_init(0)
+    dataset = SceneDataset(n, seed=seed)
+    dataset[0]
+    t0 = time.perf_counter()
+    for i in range(1, n):
+        dataset[i]
+    return (time.perf_counter() - t0) / (n - 1) * 1000
+
+
+def bench_render_parallel(workers: int, n: int, single_ms: float) -> None:
+    """`workers` plain processes rendering concurrently with no DataLoader and no IPC, so the
+    per-process time shows what the CPU (clocks, shared cache, memory bandwidth) does under
+    load, separately from what the loader path costs on top."""
+    import multiprocessing as mp
+
+    with mp.get_context("spawn").Pool(workers) as pool:
+        per_proc = pool.map(_render_worker, [(1000 + w, n) for w in range(workers)])
+    in_proc = sum(per_proc) / len(per_proc)
+    print(
+        f"plain {workers:2d} processes: {workers * 1000 / in_proc:6.0f} samples/s, "
+        f"{in_proc:5.1f} ms/scene inside each process ({single_ms / in_proc:.0%} of single-thread speed)"
+    )
+
+
 def bench_scene_render(n: int) -> float:
     """Single-process render cost in ms, the number the per-worker throughput should approach.
     When more workers give *less* throughput, the logical CPUs are SMT siblings of busy cores;
@@ -159,6 +186,8 @@ def main() -> None:
     if args.detector:
         if not args.skip_loader:
             single_ms = bench_scene_render(40)
+            for workers in args.workers:
+                bench_render_parallel(workers, 40, single_ms)
             for workers in args.workers:
                 bench_loader(SceneDataset(10**6, seed=7), workers, args.batch, args.batches, pin=device.type == "cuda" and not args.no_pin, single_ms=single_ms)
         if not args.skip_model:
