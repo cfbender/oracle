@@ -34,7 +34,7 @@ from .model import Embedder, describe_device, info_nce, pick_device
 from .synth import DET_INPUT, SceneDataset
 
 
-def bench_loader(dataset: Dataset, workers: int, batch: int, batches: int, pin: bool) -> None:
+def bench_loader(dataset: Dataset, workers: int, batch: int, batches: int, pin: bool, single_ms: float | None = None) -> None:
     loader = DataLoader(
         dataset,
         batch_size=batch,
@@ -46,12 +46,17 @@ def bench_loader(dataset: Dataset, workers: int, batch: int, batches: int, pin: 
         pin_memory=pin,
     )
     it = iter(loader)
-    next(it)  # start the workers and fill the prefetch queue before timing
+    # Start the workers, then drain what they prefetched (2 batches each) so the timed batches
+    # measure steady-state production rather than the queue emptying.
+    for _ in range(2 * workers + 1):
+        next(it)
     t0 = time.perf_counter()
     for _ in range(batches):
         next(it)
     dt = time.perf_counter() - t0
-    print(f"loader, {workers:2d} workers: {batches / dt:5.2f} batch/s, {batches * batch / dt:6.0f} samples/s")
+    per_worker_ms = dt / (batches * batch) * workers * 1000
+    note = f", {per_worker_ms:5.1f} ms/sample/worker ({single_ms / per_worker_ms:.0%} of single-thread speed)" if single_ms else ""
+    print(f"loader, {workers:2d} workers: {batches / dt:5.2f} batch/s, {batches * batch / dt:6.0f} samples/s{note}")
     del it, loader
 
 
@@ -107,15 +112,18 @@ def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
     print(f"CornerNet fwd/bwd on {describe_device(device)}: {steps / dt:5.2f} batch/s, {steps * batch / dt:6.0f} samples/s")
 
 
-def bench_scene_render(n: int) -> None:
-    """Single-process render cost, the number the per-worker throughput should approach."""
+def bench_scene_render(n: int) -> float:
+    """Single-process render cost in ms, the number the per-worker throughput should approach.
+    When more workers give *less* throughput, the logical CPUs are SMT siblings of busy cores;
+    pass --workers around the physical core count to train_detector."""
     dataset = SceneDataset(n, seed=123)
     dataset[0]
     t0 = time.perf_counter()
     for i in range(1, n):
         dataset[i]
-    dt = time.perf_counter() - t0
-    print(f"render_scene single-thread: {dt / (n - 1) * 1000:5.1f} ms/scene")
+    ms = (time.perf_counter() - t0) / (n - 1) * 1000
+    print(f"render_scene single-thread: {ms:5.1f} ms/scene")
+    return ms
 
 
 def bench_eval(model: Embedder, arts: list[dict]) -> None:
@@ -149,9 +157,9 @@ def main() -> None:
 
     if args.detector:
         if not args.skip_loader:
-            bench_scene_render(40)
+            single_ms = bench_scene_render(40)
             for workers in args.workers:
-                bench_loader(SceneDataset(10**6, seed=7), workers, args.batch, args.batches, pin=device.type == "cuda")
+                bench_loader(SceneDataset(10**6, seed=7), workers, args.batch, args.batches, pin=device.type == "cuda", single_ms=single_ms)
         if not args.skip_model:
             bench_detector_model(device, args.batch, 20)
         return

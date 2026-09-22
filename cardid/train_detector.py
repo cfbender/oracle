@@ -104,7 +104,7 @@ def main() -> None:
     parser.add_argument("--residual-weight", type=float, default=0.5)
     parser.add_argument("--pose-weight", type=float, default=1.0, help="weight of the direct pose loss (centre, log size, angle vector) next to the corner loss")
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
-    parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the cores on CPU, all but one on GPU)")
+    parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)")
     parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
     parser.add_argument("--resume")
     parser.add_argument("--real", action="store_true", help="mix in the train split of labeled real captures from data/real")

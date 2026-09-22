@@ -168,6 +168,10 @@ Rendering is ~60 ms per scene on one core, so a 20k-sample epoch needs ~80 s of 
 and the GPU idles; on CPU the model step dominates instead. `bench_loader --detector` times the
 renderer single-threaded, the DataLoader at each `--workers` count, and the CornerNet step
 separately, which is the first thing to run when epochs take longer than that arithmetic says.
+The default is one worker per logical CPU minus one; on an SMT desktop (8 cores / 16 threads)
+that oversubscribes the physical cores and 8 workers deliver ~50% more samples/s than 15, so
+sweep `--workers 6 8 10 12` in the bench and pass the winner to `train_detector`. Guest VMs
+report SMT topology too but often scale like full cores, so the trainer does not guess.
 
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 
