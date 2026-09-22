@@ -173,7 +173,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~49k images, ~3 GB)")
     parser.add_argument("--cards", type=int, help="only download full-card images of this many random train arts into data/cards (~100 KB each)")
-    parser.add_argument("--metadata", "--layouts", action="store_true", help="only backfill Scryfall metadata (layout, collector_number) into an existing data/arts.json (no image downloads)")
+    parser.add_argument(
+        "--metadata",
+        "--layouts",
+        action="store_true",
+        help="only backfill Scryfall metadata (layout, collector_number) into an existing data/arts.json (no image downloads)",
+    )
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)

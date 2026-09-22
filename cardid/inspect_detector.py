@@ -34,7 +34,10 @@ def analyse(snapped: np.ndarray, raw: np.ndarray, quads: np.ndarray) -> dict:
     angle_raw = np.array([fit_card_pose(q)[3] for q in raw])
     turned = np.abs(((angle - angle_raw) + np.pi / 2) % np.pi - np.pi / 2) > np.pi / 4  # pose rotated ~90 degrees from the target
     small, large = short < np.percentile(short, 25), short > np.percentile(short, 75)
-    pct = lambda a: {f"p{p}": round(float(np.percentile(a, p)), 4) for p in (50, 75, 90, 95)}
+
+    def pct(a: np.ndarray) -> dict[str, float]:
+        return {f"p{p}": round(float(np.percentile(a, p)), 4) for p in (50, 75, 90, 95)}
+
     gross = rel > GROSS
     return {
         "n": len(rel),
@@ -45,8 +48,16 @@ def analyse(snapped: np.ndarray, raw: np.ndarray, quads: np.ndarray) -> dict:
         "gross_turned_90": round(float((gross & turned).sum() / max(gross.sum(), 1)), 3),
         "snap_helped": round(float((rel < rel_raw - 0.005).mean()), 3),
         "snap_hurt": round(float((rel > rel_raw + 0.005).mean()), 3),
-        "small_cards": {"short_px_max": round(float(short[small].max()), 1), "median": round(float(np.median(rel[small])), 4), "hit": round(float((rel[small] < HIT).mean()), 3)},
-        "large_cards": {"short_px_min": round(float(short[large].min()), 1), "median": round(float(np.median(rel[large])), 4), "hit": round(float((rel[large] < HIT).mean()), 3)},
+        "small_cards": {
+            "short_px_max": round(float(short[small].max()), 1),
+            "median": round(float(np.median(rel[small])), 4),
+            "hit": round(float((rel[small] < HIT).mean()), 3),
+        },
+        "large_cards": {
+            "short_px_min": round(float(short[large].min()), 1),
+            "median": round(float(np.median(rel[large])), 4),
+            "hit": round(float((rel[large] < HIT).mean()), 3),
+        },
     }, rel
 
 
@@ -89,7 +100,9 @@ def main() -> None:
     worst = np.argsort(-rel)[: args.worst]
     model.eval()
     heat = torch.sigmoid(model(batch_to_input(torch.from_numpy(scenes[worst]).to(device)))[3])[:, 0].cpu().numpy()
-    tiles = [draw_case(scenes[i], quads[i], raw[i], snapped[i], heat[k], f"#{i} err {rel[i]:.2f} short {quad_short(quads[i]):.0f}px") for k, i in enumerate(worst)]
+    tiles = [
+        draw_case(scenes[i], quads[i], raw[i], snapped[i], heat[k], f"#{i} err {rel[i]:.2f} short {quad_short(quads[i]):.0f}px") for k, i in enumerate(worst)
+    ]
     cv2.imwrite(args.out, cv2.cvtColor(sheet(tiles), cv2.COLOR_RGB2BGR))
     print(f"wrote {args.out} (green target, blue pose, red snapped, magenta heatmap)")
 

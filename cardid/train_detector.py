@@ -111,7 +111,7 @@ def eval_real(model: CornerNet, dataset: RealSceneDataset, device: torch.device)
     """Single-pass error on the click windows, plus the end-to-end two-stage locate on the
     stored crops (what capture.py would do)."""
     model.eval()
-    scenes, quads = zip(*(dataset.sample(i, None) for i in range(len(dataset))))
+    scenes, quads = zip(*(dataset.sample(i, None) for i in range(len(dataset))), strict=True)
     single = summarize(predict_scenes(model, np.stack(scenes), device)[0], np.stack(quads))
     det = Detector(model=model, device=device)
     preds, targets = [], []
@@ -134,13 +134,21 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--backbone-lr", type=float, default=3e-4)
     parser.add_argument("--residual-weight", type=float, default=0.5)
-    parser.add_argument("--pose-weight", type=float, default=1.0, help="weight of the direct pose loss (centre, log size, angle vector) next to the corner loss")
+    parser.add_argument(
+        "--pose-weight", type=float, default=1.0, help="weight of the direct pose loss (centre, log size, angle vector) next to the corner loss"
+    )
     parser.add_argument("--heat-weight", type=float, default=0.2, help="weight of the corner heatmap focal loss")
     parser.add_argument("--up-weight", type=float, default=1.0, help="weight of the up-vector (which way the card is printed) loss; rendered scenes only")
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
-    parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)",
+    )
     parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
-    parser.add_argument("--no-pin", action="store_true", help="do not stage batches in pinned host memory (try if bench_loader shows the loader capped regardless of workers)")
+    parser.add_argument(
+        "--no-pin", action="store_true", help="do not stage batches in pinned host memory (try if bench_loader shows the loader capped regardless of workers)"
+    )
     parser.add_argument("--resume")
     parser.add_argument("--real", action="store_true", help="mix in the train split of labeled real captures from data/real")
     parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")

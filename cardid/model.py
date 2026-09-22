@@ -7,8 +7,8 @@ Edge TPU; the same weights also export to ONNX for an in-browser (onnxruntime-we
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 EMBED_DIM = 128

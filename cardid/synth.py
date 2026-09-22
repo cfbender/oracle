@@ -281,7 +281,9 @@ def card_face(rng: np.random.Generator, cards: CardBank, index: int, short: floa
     return img, rounded_mask(w, h, CORNER_RADIUS * w)
 
 
-def draw_card(canvas: np.ndarray, rng: np.random.Generator, cards: CardBank, quad: np.ndarray, shadow: bool = True, detail: float = DET_INPUT / SCENE) -> np.ndarray:
+def draw_card(
+    canvas: np.ndarray, rng: np.random.Generator, cards: CardBank, quad: np.ndarray, shadow: bool = True, detail: float = DET_INPUT / SCENE
+) -> np.ndarray:
     """Draw a random card from the bank on `quad`; returns its canvas-sized alpha."""
     if quad_roi(quad, canvas.shape) is None:  # entirely outside the window: nothing to decode
         return np.zeros(canvas.shape[:2], np.float32)

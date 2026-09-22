@@ -47,7 +47,9 @@ def art_frames(arts: list[dict]) -> np.ndarray:
             unknown_half += 1
         frames.append(FRAME_NAMES.index(frame_of(aspect, a.get("layout"))))
     if unknown_half:
-        print(f"{unknown_half} half-width arts without a layout in arts.json, treated as sagas; run `python -m cardid.scryfall --layouts` to tell class/case cards apart")
+        print(
+            f"{unknown_half} half-width arts without a layout in arts.json, treated as sagas; run `python -m cardid.scryfall --layouts` to tell class/case cards apart"
+        )
     return np.array(frames, dtype=np.int64)
 
 
@@ -70,7 +72,7 @@ def worker_init(_worker_id: int) -> None:
 class PairDataset(Dataset):
     """One (clean, degraded) pair per art, with a fresh random degradation every access."""
 
-    def __init__(self, arts: list[dict], cfg: Degradation = Degradation(), seed: int = 0):
+    def __init__(self, arts: list[dict], cfg: Degradation = PROFILES["harsh"], seed: int = 0):
         self.arts = arts
         self.cfg = cfg
         self.seed = seed

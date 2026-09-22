@@ -18,7 +18,7 @@ def hamming_topk(queries: np.ndarray, gallery: np.ndarray, k: int) -> tuple[np.n
     bits = gallery.shape[1]
     q = np.packbits(queries, axis=1)
     g = np.packbits(gallery, axis=1)
-    lut = np.array([bin(i).count("1") for i in range(256)], np.uint8)
+    lut = np.array([i.bit_count() for i in range(256)], np.uint8)
     out_idx = np.empty((len(q), k), np.int64)
     out_sim = np.empty((len(q), k), np.float32)
     for i, row in enumerate(q):

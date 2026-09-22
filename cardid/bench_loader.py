@@ -101,7 +101,12 @@ def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
 
     def step() -> None:
         pred, res, pose, heat, up = model(x)
-        loss = corner_loss(pred, target, res) + pose_loss(pose, quad_to_pose(target)) + 0.2 * heat_loss(heat, heat_targets(target)) + up_loss(up, up_targets(target))
+        loss = (
+            corner_loss(pred, target, res)
+            + pose_loss(pose, quad_to_pose(target))
+            + 0.2 * heat_loss(heat, heat_targets(target))
+            + up_loss(up, up_targets(target))
+        )
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()

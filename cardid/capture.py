@@ -93,7 +93,16 @@ class Session:
         top = results[best]
         capture_id = uuid.uuid4().hex[:12]
         with self.lock:
-            self.pending[capture_id] = {"crop": crop, "quad": quad, "cards": cards, "vecs": vecs, "click": click, "source": source, "top": top, "up_vote": up_vote}
+            self.pending[capture_id] = {
+                "crop": crop,
+                "quad": quad,
+                "cards": cards,
+                "vecs": vecs,
+                "click": click,
+                "source": source,
+                "top": top,
+                "up_vote": up_vote,
+            }
             if len(self.pending) > 50:
                 self.pending.pop(next(iter(self.pending)))
         short = min(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[3] - quad[0]))
@@ -193,7 +202,7 @@ def collector_key(art: dict) -> tuple[int, str]:
     """Sort key putting collector numbers in printed order: 9 before 10, then 10a, 10b."""
     number = str(art.get("collector_number", ""))
     digits = "".join(itertools.takewhile(str.isdigit, number))
-    return (int(digits) if digits else 10**9, number[len(digits):])
+    return (int(digits) if digits else 10**9, number[len(digits) :])
 
 
 def candidates(hits: list[dict]) -> list[dict]:
@@ -201,7 +210,7 @@ def candidates(hits: list[dict]) -> list[dict]:
 
 
 def png_b64(rgb: np.ndarray) -> str:
-    ok, buf = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    _, buf = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     return base64.b64encode(buf.tobytes()).decode()
 
 
@@ -267,7 +276,7 @@ def make_handler(session: Session):
                     self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except KeyError as e:
                 self.send_json({"error": f"unknown or expired capture {e}"}, HTTPStatus.GONE)
-            except Exception as e:  # noqa: BLE001 - surface to the page instead of dying
+            except Exception as e:  # surface to the page instead of dying
                 self.send_json({"error": f"{type(e).__name__}: {e}"}, HTTPStatus.BAD_REQUEST)
 
     return Handler
@@ -279,7 +288,12 @@ def main() -> None:
     parser.add_argument("--detector", help="CornerNet checkpoint from cardid.train_detector; omit to use the classical edge finder")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--frame-penalty", type=float, default=FRAME_PENALTY, help=f"similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})")
+    parser.add_argument(
+        "--frame-penalty",
+        type=float,
+        default=FRAME_PENALTY,
+        help=f"similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})",
+    )
     args = parser.parse_args()
     torch.set_num_threads(2)
     session = Session(Path(args.checkpoint), Path(args.detector) if args.detector else None, args.frame_penalty)

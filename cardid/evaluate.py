@@ -60,7 +60,7 @@ def frame_topk(q: np.ndarray, g: np.ndarray, frames: np.ndarray, k: int, penalty
     each gallery art is scored against the cut for its own frame (`frames`, G ints), minus the
     frame prior (`detect.frame_penalties`), as `index.ArtIndex.search` does."""
     sims = np.einsum("...fd,gd->...fg", q, g)
-    sims = np.take_along_axis(sims, np.broadcast_to(frames, sims.shape[:-2] + (1, len(frames))), axis=-2)[..., 0, :]
+    sims = np.take_along_axis(sims, np.broadcast_to(frames, (*sims.shape[:-2], 1, len(frames))), axis=-2)[..., 0, :]
     return topk(sims - frame_penalties(frames, penalty), k)
 
 
@@ -73,7 +73,7 @@ def report(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[d
 
     result = {
         "method": label,
-        "queries": int(len(targets)),
+        "queries": len(targets),
         "top1": float(top1.mean()),
         "top5": float(top5.mean()),
         "by_width": {},
@@ -126,7 +126,9 @@ def print_misses(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: 
         if "other_orientation" in infos[i]:
             art, sim, top = infos[i]["other_orientation"]
             rank = np.where(top == targets[i])[0]
-            line += f"\n      other orientation: {art['name']} [{art['set']}] sim {sim:.3f}, truth {'rank ' + str(rank[0] + 1) if len(rank) else 'not in top 5'}"
+            line += (
+                f"\n      other orientation: {art['name']} [{art['set']}] sim {sim:.3f}, truth {'rank ' + str(rank[0] + 1) if len(rank) else 'not in top 5'}"
+            )
         print(line)
 
 
@@ -142,7 +144,12 @@ def main() -> None:
         "--detector",
         help="with --real: re-locate the card in each stored crop with this CornerNet checkpoint (or 'classical' for the edge finder) instead of using the stored quad",
     )
-    parser.add_argument("--frame-penalty", type=float, default=FRAME_PENALTY, help=f"with --real: similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})")
+    parser.add_argument(
+        "--frame-penalty",
+        type=float,
+        default=FRAME_PENALTY,
+        help=f"with --real: similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})",
+    )
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     args = parser.parse_args()
     torch.set_num_threads(os.cpu_count() or 8)

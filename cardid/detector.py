@@ -415,7 +415,9 @@ def main() -> None:
         cx, cy, short, angle = fit_card_pose(learned)
         up = (learned[0] + learned[1]) / 2 - learned.mean(axis=0)
         classical_note = "found" if classical is not None else "none"
-        print(f"click ({x},{y}): learned centre=({cx:.0f},{cy:.0f}) short={short:.0f}px angle={angle:.0f}deg up={np.degrees(np.arctan2(up[1], up[0])):.0f}deg; classical {classical_note}")
+        print(
+            f"click ({x},{y}): learned centre=({cx:.0f},{cy:.0f}) short={short:.0f}px angle={angle:.0f}deg up={np.degrees(np.arctan2(up[1], up[0])):.0f}deg; classical {classical_note}"
+        )
     cv2.imwrite(args.out, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
     print(f"wrote {args.out}")
 

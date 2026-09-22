@@ -12,7 +12,6 @@ dice/counters/overlapping cards.
 
 from __future__ import annotations
 
-import io
 import sys
 from dataclasses import dataclass
 
@@ -23,7 +22,7 @@ from PIL import Image
 INPUT_SIZE = 128  # model input (square); aspect is squashed identically for gallery and query
 
 
-@dataclass
+@dataclass(frozen=True)
 class Degradation:
     """Knobs so evaluation can bucket by difficulty. Widths are the simulated art width in px."""
 
@@ -50,11 +49,11 @@ def clean_view(img: np.ndarray) -> np.ndarray:
     return cv2.resize(img, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_AREA)
 
 
-def degraded_view(img: np.ndarray, rng: np.random.Generator, cfg: Degradation = Degradation()) -> tuple[np.ndarray, dict]:
+def degraded_view(img: np.ndarray, rng: np.random.Generator, cfg: Degradation = PROFILES["harsh"]) -> tuple[np.ndarray, dict]:
     """Return (128x128 RGB uint8, info) where info records the sampled difficulty knobs."""
     h, w = img.shape[:2]
     width = int(rng.integers(cfg.min_width, cfg.max_width + 1))
-    height = max(8, int(round(width * h / w)))
+    height = max(8, round(width * h / w))
 
     # 1. Geometry: crop jitter (detector error) + residual perspective + slight rotation,
     #    rendered directly at the low capture resolution so downscaling is part of the warp.
@@ -133,7 +132,7 @@ def degraded_view(img: np.ndarray, rng: np.random.Generator, cfg: Degradation = 
     low = low + rng.normal(0, rng.uniform(1.5, 9), size=low.shape).astype(np.float32)
     low = np.clip(low, 0, 255).astype(np.uint8)
     quality = int(rng.integers(35, 90))
-    ok, enc = cv2.imencode(".jpg", cv2.cvtColor(low, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality])
+    _, enc = cv2.imencode(".jpg", cv2.cvtColor(low, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality])
     low = cv2.cvtColor(cv2.imdecode(enc, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 
     # 7. Upsample to model input as the recognizer would.

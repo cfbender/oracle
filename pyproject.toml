@@ -84,3 +84,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cardid"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF", "PLR0402", "FURB"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]  # long lines are wrapped by the formatter where it can; unicode in prose is fine
