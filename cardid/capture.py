@@ -72,7 +72,15 @@ class Session:
         arts = np.stack([art_crop(c) for c in cards])
         vecs = self.index.embed(arts)
         results = [self.index.search(v, 5) for v in vecs]
-        best = int(np.argmax([r[0]["similarity"] for r in results]))
+        if source == "detector":
+            # The learned detector orders the quad from the printed top-left, so index 0 is
+            # upright by its judgement; the 180-degree turn is only embedded so labelling can
+            # still store the card the right way up when the detector was wrong.
+            best = 0
+        else:
+            # The classical finder and hand-drawn boxes do not know which way is up: keep the
+            # rotation the recogniser is more confident about.
+            best = int(np.argmax([r[0]["similarity"] for r in results]))
         top = results[best]
         capture_id = uuid.uuid4().hex[:12]
         with self.lock:
@@ -83,6 +91,7 @@ class Session:
         return {
             "capture_id": capture_id,
             "quad": quad.tolist(),
+            "quad_source": source,
             "orientation": best * 180,
             "card_px": round(float(short)),
             "card_png": png_b64(cards[best]),
@@ -118,6 +127,9 @@ class Session:
             "art_px": round(float(short) * 0.84),
             "checkpoint": str(self.index.checkpoint),
         }
+        if p["source"] == "detector":
+            # the detector said index 0 was upright; the labeled art says which really was
+            row["up_correct"] = best == 0
         return save_label(capture_id, row, crop_rgb=p["crop"], card_rgb=p["cards"][best])
 
     def stats(self) -> dict:
@@ -125,7 +137,16 @@ class Session:
         n = len(rows)
         top1 = sum(r["top5"][0] == r["label"] for r in rows)
         top5 = sum(r["label"] in r["top5"] for r in rows)
-        return {"labeled": n, "top1": top1, "top5": top5, "train": sum(r["split"] == "train" for r in rows), "eval": sum(r["split"] == "eval" for r in rows)}
+        judged = [r["up_correct"] for r in rows if "up_correct" in r]
+        return {
+            "labeled": n,
+            "top1": top1,
+            "top5": top5,
+            "train": sum(r["split"] == "train" for r in rows),
+            "eval": sum(r["split"] == "eval" for r in rows),
+            "up_correct": sum(judged),
+            "up_judged": len(judged),
+        }
 
     def search(self, q: str) -> list[dict]:
         q = q.strip().lower()

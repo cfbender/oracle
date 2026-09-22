@@ -17,6 +17,12 @@ neighbourhood for sub-pixel position; a corner with no peak nearby keeps the pos
 The pose gives the ordering, the 90-degree disambiguation and a guaranteed answer; the
 heatmap gives the precision.
 
+The pose is 180-degree symmetric, so the head also predicts which way is *up*: the unit
+vector from the card's centre towards its printed top edge. Rendered scenes know their
+printed orientation for free, and picking the orientation this way instead of by recogniser
+confidence matters: a card's text box, warped upside down, scores higher against a sky or
+another text-heavy art than the right way up does against its own art.
+
 Inference is two-stage: the pose from the 640px click window, then the same network on a
 tight window around that estimate, where 1% of the input is a couple of native pixels.
 """
@@ -78,7 +84,8 @@ class CornerNet(nn.Module):
         self.lateral = nn.Conv2d(48, self.FUSE, 1)
         self.reduce = nn.Conv2d(576, self.FUSE, 1)
         self.squeeze = nn.Sequential(nn.Conv2d(self.FUSE, self.SQUEEZE, 3, padding=1), nn.Hardswish())
-        self.head = nn.Sequential(nn.Linear(self.SQUEEZE * 16 * 16, 256), nn.Hardswish(), nn.Dropout(0.1), nn.Linear(256, 5 + 8))
+        # outputs: pose (5), corner residuals (8), up vector (2)
+        self.head = nn.Sequential(nn.Linear(self.SQUEEZE * 16 * 16, 256), nn.Hardswish(), nn.Dropout(0.1), nn.Linear(256, 5 + 8 + 2))
         # corner heatmap decoder: fused stride 16 -> 8 (lateral from features[3], 24 ch) -> 4
         # (lateral from features[1], 16 ch) -> one logit per position
         self.lat8 = nn.Conv2d(24, self.DECODE, 1)
@@ -91,6 +98,7 @@ class CornerNet(nn.Module):
             self.head[-1].weight.mul_(0.1)
             self.head[-1].bias.zero_()
             self.head[-1].bias[:5] = torch.tensor([0.5, 0.5, float(np.log(0.3)), 1.0, 0.0])
+            self.head[-1].bias[13:] = torch.tensor([0.0, -1.0])  # up = towards the top of the image
             self.dec4[-1].bias.fill_(-2.19)  # sigmoid 0.1: corners are rare (focal-loss prior)
 
     def backbone_parameters(self):
@@ -101,23 +109,53 @@ class CornerNet(nn.Module):
         for m in (self.lateral, self.reduce, self.squeeze, self.head, self.lat8, self.lat4, self.up16, self.dec8, self.dec4):
             yield from m.parameters()
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns (corners (N, 4, 2) in [0, 1] window units, residuals (N, 4, 2) in short-side
         units, raw pose (N, 5) [cx, cy, log short, cos2t, sin2t], corner heatmap logits
-        (N, 1, 64, 64) at stride HEAT_STRIDE)."""
+        (N, 1, 64, 64) at stride HEAT_STRIDE, up vector (N, 2) in image axes, roughly unit)."""
         s4 = self.stem[:2](x)  # (N, 16, 64, 64)
         s8 = self.stem[2:4](s4)  # (N, 24, 32, 32)
         mid = self.stem[4:](s8)  # (N, 48, 16, 16)
         top = self.reduce(self.top(mid))
         fused = self.lateral(mid) + nn.functional.interpolate(top, size=mid.shape[-2:], mode="bilinear", align_corners=False)
         out = self.head(self.squeeze(fused).flatten(1))
-        pose, res = out[:, :5], out[:, 5:].view(-1, 4, 2)
+        pose, res, up = out[:, :5], out[:, 5:13].view(-1, 4, 2), out[:, 13:]
         res = torch.tanh(res) * RESIDUAL
         quad = pose_to_quad(pose)
         short = pose[:, 2].exp()[:, None, None]
         d8 = self.dec8(self.lat8(s8) + nn.functional.interpolate(self.up16(fused), scale_factor=2, mode="bilinear", align_corners=False))
         heat = self.dec4(self.lat4(s4) + nn.functional.interpolate(d8, scale_factor=2, mode="bilinear", align_corners=False))
-        return quad + res * short, res, pose, heat
+        return quad + res * short, res, pose, heat, up
+
+
+def up_targets(quads: torch.Tensor) -> torch.Tensor:
+    """(N, 4, 2) quads in printed order -> (N, 2) unit vectors from the centre to the midpoint
+    of the printed top edge (corners 0 and 1)."""
+    top = (quads[:, 0] + quads[:, 1]) / 2 - quads.mean(dim=1)
+    return nn.functional.normalize(top, dim=1)
+
+
+def up_loss(up: torch.Tensor, target: torch.Tensor, valid: torch.Tensor | None = None) -> torch.Tensor:
+    """L2 distance to the unit target, over the samples whose printed orientation is known
+    (real captures store whichever quad the identification used, so theirs is not)."""
+    per = (up - target).pow(2).sum(dim=1)
+    if valid is None:
+        return per.mean()
+    return (per * valid).sum() / valid.sum().clamp(min=1)
+
+
+def orient_quad(quad: np.ndarray, up: np.ndarray) -> np.ndarray:
+    """Roll a cyclically ordered quad so corner 0 is the printed top-left: of the two short
+    edges, the one whose midpoint lies in the direction of `up` from the centre comes first.
+    `warp_card` then produces an upright card without the caller trying rotations."""
+    q = np.asarray(quad, np.float32)
+    edges = np.roll(q, -1, axis=0) - q
+    lengths = np.linalg.norm(edges, axis=1)
+    first = 0 if lengths[0] + lengths[2] < lengths[1] + lengths[3] else 1  # the short pair is (first, first + 2)
+    centre = q.mean(axis=0)
+    mids = (q + np.roll(q, -1, axis=0)) / 2 - centre
+    k = first if mids[first] @ up >= mids[first + 2] @ up else first + 2
+    return np.roll(q, -k, axis=0)
 
 
 HEAT_STRIDE = 4
@@ -251,14 +289,25 @@ def cyclic_order(quad: np.ndarray) -> np.ndarray:
 
 
 def load_checkpoint(model: CornerNet, path: Path, device: torch.device) -> None:
-    """Load a state dict, tolerating checkpoints saved before the heatmap decoder existed
-    (their decoder layers keep their fresh initialisation, so warm-starting still works)."""
+    """Load a state dict, tolerating checkpoints saved before the heatmap decoder or the up
+    output existed: missing layers keep their fresh initialisation and a shorter final head
+    row block is copied into the first rows, so warm-starting still works."""
     state = torch.load(path, map_location=device)
+    notes = []
+    own = model.state_dict()
+    for key in ("head.3.weight", "head.3.bias"):
+        if key in state and state[key].shape != own[key].shape:
+            merged = own[key].clone()
+            merged[: state[key].shape[0]] = state[key]
+            notes.append(f"{key} widened {state[key].shape[0]} -> {own[key].shape[0]} outputs (pre-up detector), new rows left at init")
+            state[key] = merged
     missing, unexpected = model.load_state_dict(state, strict=False)
     if unexpected:
         raise RuntimeError(f"{path}: unexpected keys {sorted(unexpected)[:5]}")
     if missing:
-        print(f"{path}: {len(missing)} keys not in checkpoint (pre-heatmap detector), left at init")
+        notes.append(f"{len(missing)} keys not in checkpoint (pre-heatmap detector), left at init")
+    for note in notes:
+        print(f"{path}: {note}")
 
 
 class Detector:
@@ -273,29 +322,32 @@ class Detector:
         self.model = model.eval()
 
     @torch.no_grad()
-    def predict_window(self, img: np.ndarray, cx: float, cy: float, side: float) -> np.ndarray:
-        """Corners (4x2, image px) of the card in the `side`-px square centred on (cx, cy)."""
+    def predict_window(self, img: np.ndarray, cx: float, cy: float, side: float) -> tuple[np.ndarray, np.ndarray]:
+        """(corners (4x2, image px), up vector (2,)) of the card in the `side`-px square
+        centred on (cx, cy). The window is a scaled translation of the image, so a direction
+        in the window is the same direction in the image."""
         win, M = window_around(img, cx, cy, side, DET_INPUT)
         x = scene_to_input(win)[None].to(self.device)
-        quad, _, _, heat = self.model(x)
+        quad, _, _, heat, up = self.model(x)
         quad = quad.cpu().numpy() * DET_INPUT
         quad = snap_corners(quad, torch.sigmoid(heat)[:, 0].cpu().numpy())[0]
         Minv = cv2_invert(M)
-        return apply_affine(Minv, quad)
+        return apply_affine(Minv, quad), up[0].cpu().numpy()
 
     def locate(self, img: np.ndarray, click: tuple[float, float], refine: bool = True, snap: bool = False) -> np.ndarray:
-        """Ordered 4x2 float32 quad of the card under `click` in `img` (RGB uint8). Always
+        """4x2 float32 quad of the card under `click` in `img` (RGB uint8), in printed order
+        (corner 0 is the card's top-left, so `warp_card` yields an upright card). Always
         returns something: a wrong quad still gets the recogniser a guess, which the UI can
         show alongside its alternatives."""
-        quad = self.predict_window(img, click[0], click[1], SCENE)
+        quad, up = self.predict_window(img, click[0], click[1], SCENE)
         if refine:
             # second pass on a window where the card spans ~60% of the input
             cx, cy, short, _ = fit_card_pose(quad)
             side = max(short * CARD_ASPECT / 0.6, 64.0)
-            quad = self.predict_window(img, cx, cy, side)
+            quad, up = self.predict_window(img, cx, cy, side)
         if snap:
             quad = card_rect(*fit_card_pose(quad))
-        return cyclic_order(quad)
+        return orient_quad(cyclic_order(quad), up)
 
 
 def cv2_invert(M: np.ndarray) -> np.ndarray:
@@ -335,10 +387,12 @@ def main() -> None:
             cv2.polylines(vis, [classical.astype(np.int32)], True, (60, 120, 255), 3)
         learned = detector.locate(img, (x, y), snap=args.snap)
         cv2.polylines(vis, [learned.astype(np.int32)], True, (40, 230, 60), 3)
+        cv2.circle(vis, tuple(learned[0].astype(int)), 10, (255, 40, 40), -1)  # printed top-left
         cv2.circle(vis, (x, y), 8, (255, 255, 0), -1)
         cx, cy, short, angle = fit_card_pose(learned)
+        up = (learned[0] + learned[1]) / 2 - learned.mean(axis=0)
         classical_note = "found" if classical is not None else "none"
-        print(f"click ({x},{y}): learned centre=({cx:.0f},{cy:.0f}) short={short:.0f}px angle={angle:.0f}deg; classical {classical_note}")
+        print(f"click ({x},{y}): learned centre=({cx:.0f},{cy:.0f}) short={short:.0f}px angle={angle:.0f}deg up={np.degrees(np.arctan2(up[1], up[0])):.0f}deg; classical {classical_note}")
     cv2.imwrite(args.out, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
     print(f"wrote {args.out}")
 

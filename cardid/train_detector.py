@@ -7,8 +7,9 @@ Per epoch it reports the corner error on a fixed synthetic validation set and, w
 real captures exist, on the held-out real split (against the quads the identification used,
 which are only as good as the classical finder or the user's box). Error is the mean corner
 distance as a fraction of the card's short side; "hit" is error < 5%, inside the recogniser's
-crop-jitter tolerance. `real_e2e` runs the actual two-stage `Detector.locate` on the stored
-crops. Checkpoints to data/runs/<run>/{last,best}.pt.
+crop-jitter tolerance; "up" is how often the predicted up vector points into the right half
+plane, i.e. the card would be warped the right way round. `real_e2e` runs the actual two-stage
+`Detector.locate` on the stored crops. Checkpoints to data/runs/<run>/{last,best}.pt.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ from .detector import (
     pose_loss,
     quad_to_pose,
     snap_corners,
+    up_loss,
+    up_targets,
 )
 from .model import describe_device, gpu, pick_device
 from .real import REAL_DIR, load_labels
@@ -53,7 +56,7 @@ def val_scenes(n: int, workers: int, seed: int = 999) -> tuple[np.ndarray, np.nd
         return z["scenes"], z["quads"]
     loader = DataLoader(SceneDataset(n, seed=seed, raw=True), batch_size=32, num_workers=workers, worker_init_fn=worker_init)
     scenes, quads = [], []
-    for s, q in tqdm(loader, desc="val scenes", leave=False):
+    for s, q, _ in tqdm(loader, desc="val scenes", leave=False):
         scenes.append(s.numpy())
         quads.append(q.numpy())
     scenes, quads = np.concatenate(scenes), np.concatenate(quads)
@@ -69,23 +72,31 @@ def summarize(pred: np.ndarray, target: np.ndarray) -> dict:
 
 
 @torch.no_grad()
-def predict_scenes(model: CornerNet, scenes: np.ndarray, device: torch.device, batch: int = 64) -> tuple[np.ndarray, np.ndarray]:
-    """(snapped, raw pose) corner predictions in input px for a stack of 256px scenes."""
+def predict_scenes(model: CornerNet, scenes: np.ndarray, device: torch.device, batch: int = 64) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(snapped corners, raw pose corners, up vectors) in input px for a stack of 256px scenes."""
     model.eval()
-    snapped, raw = [], []
+    snapped, raw, ups = [], [], []
     for i in range(0, len(scenes), batch):
         x = batch_to_input(torch.from_numpy(scenes[i : i + batch]).to(device))
-        quad, _, _, heat = model(x)
+        quad, _, _, heat, up = model(x)
         quad = quad.cpu().numpy() * DET_INPUT
         raw.append(quad)
         snapped.append(snap_corners(quad, torch.sigmoid(heat)[:, 0].cpu().numpy()))
-    return np.concatenate(snapped), np.concatenate(raw)
+        ups.append(up.cpu().numpy())
+    return np.concatenate(snapped), np.concatenate(raw), np.concatenate(ups)
+
+
+def up_accuracy(up: np.ndarray, quads: np.ndarray) -> float:
+    """Share of predicted up vectors within 90 degrees of the printed-order target (the
+    decision `orient_quad` makes is exactly this sign)."""
+    target = up_targets(torch.from_numpy(quads)).numpy()
+    return float(((up * target).sum(axis=1) > 0).mean())
 
 
 def eval_scenes(model: CornerNet, scenes: np.ndarray, quads: np.ndarray, device: torch.device, batch: int = 64) -> dict:
-    """{"synth": snapped error, "synth_pose": raw pose-head error} on the fixed validation set."""
-    snapped, raw = predict_scenes(model, scenes, device, batch)
-    return {"synth": summarize(snapped, quads), "synth_pose": summarize(raw, quads)}
+    """{"synth": snapped error + up accuracy, "synth_pose": raw pose-head error} on the fixed validation set."""
+    snapped, raw, up = predict_scenes(model, scenes, device, batch)
+    return {"synth": {**summarize(snapped, quads), "up": round(up_accuracy(up, quads), 3)}, "synth_pose": summarize(raw, quads)}
 
 
 @torch.no_grad()
@@ -118,6 +129,7 @@ def main() -> None:
     parser.add_argument("--residual-weight", type=float, default=0.5)
     parser.add_argument("--pose-weight", type=float, default=1.0, help="weight of the direct pose loss (centre, log size, angle vector) next to the corner loss")
     parser.add_argument("--heat-weight", type=float, default=0.2, help="weight of the corner heatmap focal loss")
+    parser.add_argument("--up-weight", type=float, default=1.0, help="weight of the up-vector (which way the card is printed) loss; rendered scenes only")
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)")
     parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
@@ -199,14 +211,16 @@ def main() -> None:
         model.train()
         t0, losses, res_mag = time.time(), [], []
         bar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
-        for x, target in bar:
+        for x, target, up_valid in bar:
             target_pose = quad_to_pose(target).to(device, non_blocking=True)  # fitted on the CPU copy, before the transfer
             x, target = batch_to_input(x.to(device, non_blocking=True)), target.to(device, non_blocking=True)
-            pred, residual, pose, heat = model(x)
+            up_valid = up_valid.to(device, non_blocking=True).float()
+            pred, residual, pose, heat, up = model(x)
             loss = (
                 corner_loss(pred, target, residual, args.residual_weight)
                 + args.pose_weight * pose_loss(pose, target_pose)
                 + args.heat_weight * heat_loss(heat, heat_targets(target))
+                + args.up_weight * up_loss(up, up_targets(target), up_valid)
             )
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -227,7 +241,10 @@ def main() -> None:
             best = score(metrics)
             torch.save(state, run_dir / "best.pt")
         (run_dir / "history.json").write_text(json.dumps(history, indent=2))
-    print(f"best -> {run_dir / 'best.pt'}")
+    if (run_dir / "best.pt").exists():
+        print(f"best -> {run_dir / 'best.pt'}")
+    else:
+        print(f"no epoch beat the starting checkpoint, so no best.pt; last -> {run_dir / 'last.pt'}")
 
 
 if __name__ == "__main__":

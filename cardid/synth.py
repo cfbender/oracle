@@ -500,8 +500,9 @@ def batch_to_input(scenes: torch.Tensor) -> torch.Tensor:
 
 class SceneDataset(Dataset):
     """`length` fresh scenes per epoch; deterministic in (seed, epoch, index). Yields the HWC
-    uint8 scene (normalise batches with `batch_to_input`) and the quad in [0, 1] window units,
-    or in pixels with `raw`."""
+    uint8 scene (normalise batches with `batch_to_input`), the quad in [0, 1] window units
+    (or in pixels with `raw`) in printed order, and `up_valid` = True: a rendered scene knows
+    which way its card is printed, so the detector's up output can learn from it."""
 
     def __init__(self, length: int, cards: CardBank | None = None, arts: ArtBank | None = None, seed: int = 0, raw: bool = False):
         self.length = length
@@ -522,7 +523,7 @@ class SceneDataset(Dataset):
     def __getitem__(self, i: int):
         rng = np.random.default_rng([self.seed, self.epoch, i])
         scene, quad = render_scene(rng, self.cards, self.arts)
-        return torch.from_numpy(scene), torch.from_numpy(quad if self.raw else quad / DET_INPUT)
+        return torch.from_numpy(scene), torch.from_numpy(quad if self.raw else quad / DET_INPUT), torch.tensor(True)
 
 
 def window_around(img: np.ndarray, cx: float, cy: float, side: float, out: int = SCENE) -> tuple[np.ndarray, np.ndarray]:
@@ -551,7 +552,9 @@ class RealSceneDataset(Dataset):
 
     Only quads worth learning from are kept: ones the user drew by hand, or automatic ones the
     recogniser confirmed with a top-1 hit (a loose quad that still identified the card is
-    fine for the embedder but would teach the detector to be loose)."""
+    fine for the embedder but would teach the detector to be loose). Stored quads are only
+    cyclically ordered, not printed-ordered (the card may have been identified upside down),
+    so samples carry `up_valid` = False and do not train the up output."""
 
     def __init__(self, rows: list[dict], repeat: int = 1, augment: bool = True, seed: int = 1):
         from .real import REAL_DIR
@@ -592,7 +595,7 @@ class RealSceneDataset(Dataset):
     def __getitem__(self, i: int):
         rng = np.random.default_rng([self.seed, self.epoch, i]) if self.augment else None
         scene, quad = self.sample(i, rng)
-        return torch.from_numpy(np.ascontiguousarray(scene)), torch.from_numpy(quad / DET_INPUT)
+        return torch.from_numpy(np.ascontiguousarray(scene)), torch.from_numpy(quad / DET_INPUT), torch.tensor(False)
 
 
 def sheet(n: int, seed: int, out: Path) -> None:

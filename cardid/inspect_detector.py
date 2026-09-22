@@ -82,7 +82,7 @@ def main() -> None:
     model = CornerNet(pretrained=False).to(device)
     load_checkpoint(model, args.checkpoint, device)
     scenes, quads = val_scenes(args.val, args.workers)
-    snapped, raw = predict_scenes(model, scenes, device)
+    snapped, raw, _ = predict_scenes(model, scenes, device)
     stats, rel = analyse(snapped, raw, quads)
     print(json.dumps(stats, indent=2))
 

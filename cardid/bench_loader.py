@@ -35,6 +35,8 @@ from .detector import (
     heat_targets,
     pose_loss,
     quad_to_pose,
+    up_loss,
+    up_targets,
 )
 from .evaluate import embed_images
 from .model import Embedder, describe_device, gpu, info_nce, pick_device, sync
@@ -98,8 +100,8 @@ def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
     target = torch.rand(batch, 4, 2, device=device)
 
     def step() -> None:
-        pred, res, pose, heat = model(x)
-        loss = corner_loss(pred, target, res) + pose_loss(pose, quad_to_pose(target)) + 0.2 * heat_loss(heat, heat_targets(target))
+        pred, res, pose, heat, up = model(x)
+        loss = corner_loss(pred, target, res) + pose_loss(pose, quad_to_pose(target)) + 0.2 * heat_loss(heat, heat_targets(target)) + up_loss(up, up_targets(target))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()

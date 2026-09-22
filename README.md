@@ -151,7 +151,23 @@ ordering, the 90° disambiguation and a guaranteed answer; the heatmap supplies 
 Inference runs twice: once on the click window, then on a tight window around the first
 estimate. It always returns a quad — a wrong one still gives the recogniser a guess to rank,
 which beats "nothing found". `--resume` accepts checkpoints from before the heatmap head
-(the decoder starts fresh, everything else warm-starts).
+(the decoder starts fresh, everything else warm-starts) and before the up output (the two new
+head rows start fresh).
+
+The pose is symmetric under a 180° turn, so the head also predicts which way is *up*: a unit
+vector from the card's centre towards its printed top edge (`--up-weight`, default 1.0,
+trained on rendered scenes only since a stored real quad may have been identified upside
+down). `Detector.locate` returns the quad in printed order — corner 0 is the card's top-left —
+so `warp_card` produces an upright card and the recogniser embeds one orientation. The earlier
+approach, embedding both rotations and keeping the more confident one, was the main source of
+misses on real captures: a text box warped upside down matches a sky or a text-heavy art (White
+Ward, Look at Me I'm R&D) at ~0.67 similarity, more than a real photo of the art matches its
+own scan: on 15 eval captures 4 of the 7 misses had the truth top-1 in the rotation the
+confidence rule rejected (top-1 0.53 against an orientation oracle of 0.80). The trainer reports `up`, the share of validation scenes
+where the vector points into the correct half plane; `capture` still embeds the 180° turn so
+labelling can store `card.png` upright when the detector was wrong, records `up_correct` per
+label and shows the running rate ("up ok"), and `evaluate --real --detector <ckpt>` counts how
+often the up output rejected the rotation in which the truth was top-1.
 
 Training data is rendered by `cardid.synth` from full-card images composited onto busy
 backgrounds (random art crops as playmats, flat desks, gradients), with sleeves (a ring

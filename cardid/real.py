@@ -113,9 +113,9 @@ class RealDataset(Dataset):
 def real_detector_queries(rows: list[dict], gallery_index: dict[str, int], locate) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """Like `real_eval_queries`, but re-locate the card in the stored click crop with
     `locate(crop_rgb, click) -> quad` instead of using the stored quad, so a detector can be
-    scored by the identification accuracy it produces. Returns two queries per capture (the
-    card and its 180-degree rotation, since the detector does not know which way is up);
-    the caller keeps whichever the recogniser is more confident about."""
+    scored by the identification accuracy it produces. Returns two queries per capture: the
+    card as the quad orders it (upright, if `locate` is the learned detector) and its
+    180-degree rotation; the caller decides which one counts (see `evaluate`)."""
     from .detect import art_crop, card_orientations, warp_card
     from .detector import corner_error
     from .synth import quad_short

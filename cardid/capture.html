@@ -47,6 +47,7 @@
     <div><b id="s-labeled">0</b><span class="muted">labeled</span></div>
     <div><b id="s-top1">–</b><span class="muted">top-1</span></div>
     <div><b id="s-top5">–</b><span class="muted">top-5</span></div>
+    <div title="how often the detector's up/down call matched the labeled card"><b id="s-up">–</b><span class="muted">up ok</span></div>
     <div><b id="s-ms">–</b><span class="muted">ms</span></div>
   </div>
   <div id="status" class="muted">Click a card. <kbd>1</kbd>–<kbd>5</kbd> confirm, <kbd>S</kbd> skip, <kbd>/</kbd> search, shift-click the 4 corners to outline a card manually (<kbd>Esc</kbd> cancels).</div>
@@ -156,7 +157,7 @@ async function identify(x, y, quad) {
   document.getElementById('card').src = 'data:image/png;base64,' + j.card_png;
   renderCandidates(j.candidates, j.margin);
   drawOverlay();
-  setStatus(`card ≈ ${j.card_px} px wide · margin ${j.margin} · ${j.orientation ? 'rotated 180°' : 'upright'}`);
+  setStatus(`card ≈ ${j.card_px} px wide · margin ${j.margin} · ${j.quad_source === 'detector' ? 'up from detector' : j.orientation ? 'rotated 180° (recogniser pick)' : 'upright (recogniser pick)'}`);
 }
 
 function renderCandidates(list, margin) {
@@ -185,6 +186,7 @@ function updateStats(s) {
   document.getElementById('s-labeled').textContent = s.labeled;
   document.getElementById('s-top1').textContent = s.labeled ? (s.top1 / s.labeled).toFixed(2) : '–';
   document.getElementById('s-top5').textContent = s.labeled ? (s.top5 / s.labeled).toFixed(2) : '–';
+  document.getElementById('s-up').textContent = s.up_judged ? `${(s.up_correct / s.up_judged).toFixed(2)} (${s.up_judged})` : '–';
 }
 
 let searchTimer = null;

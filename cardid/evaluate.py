@@ -134,11 +134,13 @@ def main() -> None:
     t0 = time.time()
     gallery = gallery_images(arts)
     per_query = 1
+    learned_up = False
     if args.real and args.detector:
         profile = f"real+{'classical' if args.detector == 'classical' else 'detector'}"
         locate = classical_locate if args.detector == "classical" else Detector(args.detector).locate
         queries, targets, infos = real_detector_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)}, locate)
-        per_query = 2  # both orientations; the more confident one is kept below
+        per_query = 2  # both orientations; which one counts is decided below
+        learned_up = args.detector != "classical"  # the learned detector orders the quad upright itself
     elif args.real:
         profile = "real"
         queries, targets, infos = real_eval_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)})
@@ -169,17 +171,27 @@ def main() -> None:
         print(f"embedded in {time.time() - t0:.1f}s on {describe_device(device)}")
         idx, sims = cosine_topk(q, g, 5)
         if per_query > 1:
-            # capture.py keeps the orientation whose best match is most similar
             idx, sims = idx.reshape(-1, per_query, 5), sims.reshape(-1, per_query, 5)
-            pick = sims[:, :, 0].argmax(axis=1)
             rows = np.arange(len(idx))
+            if learned_up:
+                # capture.py trusts the detector's up output: query 0 is the card as it ordered it
+                pick = np.zeros(len(idx), dtype=int)
+            else:
+                # capture.py keeps the orientation whose best match is most similar
+                pick = sims[:, :, 0].argmax(axis=1)
             other = idx[rows, 1 - pick], sims[rows, 1 - pick]
             for i, info in enumerate(infos):
                 info["other_orientation"] = (arts[other[0][i, 0]], float(other[1][i, 0]), other[0][i])
             # what a correct up/down decision would recover: the truth is top-1 in either orientation
-            oracle = (idx[:, :, 0] == targets[:, None]).any(axis=1).mean()
-            idx, sims = idx[rows, pick], sims[rows, pick]
+            hit_each = idx[:, :, 0] == targets[:, None]
+            oracle = hit_each.any(axis=1).mean()
             print(f"orientation oracle top1 (truth is top-1 in either orientation): {oracle:.2f}")
+            if learned_up:
+                # a wrong up call is visible when the truth is top-1 only in the rotation the detector rejected
+                wrong = int((hit_each[:, 1] & ~hit_each[:, 0]).sum())
+                confident = int(hit_each.sum(axis=1).astype(bool).sum())
+                print(f"detector up output wrong on {wrong} of the {confident} captures where the truth is top-1 in one orientation")
+            idx, sims = idx[rows, pick], sims[rows, pick]
         report(idx, sims, targets, infos, label)
         if args.real:
             print_misses(idx, sims, targets, infos, arts)
