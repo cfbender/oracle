@@ -17,14 +17,18 @@ webcam photometrics.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
-from . import ART_DIR, CARD_DIR
+from . import ART_DIR, CACHE_DIR, CARD_DIR
 from .data import IMAGENET_MEAN, IMAGENET_STD, to_tensor
 from .degrade import load_rgb
 
@@ -43,6 +47,90 @@ def list_cards() -> list[Path]:
 
 def list_arts() -> list[Path]:
     return sorted(ART_DIR.glob("*.jpg"))
+
+
+CARD_SHAPE = (680, 488)  # Scryfall "normal" full-card JPEGs
+ART_SHAPE = (457, 626)  # the common Scryfall art-crop size; odd crops are centre-cut to it
+BG_ARTS = 1500  # backgrounds sample this many arts (a fixed seeded subset), not the whole gallery
+
+
+class ImageBank:
+    """The images the renderer draws from, decoded once at half resolution into a memory-mapped
+    `.npy` under data/cache. JPEG decoding is entropy-bound (~5 ms per 110 KB card whatever the
+    DCT-scaling flag), and a scene decodes three or four images, so it was a quarter of the
+    render time; a memmap slice is a page-cache read shared by every DataLoader worker.
+    Half resolution (244 px across a card) is enough for every card the renderer draws once
+    the 640 px window is downscaled 2.5x for the detector; see `CardBank.load`."""
+
+    def __init__(self, paths: list[Path], shape: tuple[int, int], name: str):
+        self.paths = paths
+        self.shape = (shape[0] // 2, shape[1] // 2)
+        key = hashlib.sha1("\n".join(p.name for p in paths).encode()).hexdigest()[:10]
+        self.path = CACHE_DIR / f"{name}-{self.shape[1]}x{self.shape[0]}-{len(paths)}-{key}.npy"
+        self._mm: np.ndarray | None = None
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getstate__(self) -> dict:
+        return {**self.__dict__, "_mm": None}  # workers open the memmap themselves
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        """Half-resolution RGB uint8 view (H/2, W/2, 3); do not write to it."""
+        if self._mm is None:
+            self.build()
+            self._mm = np.load(self.path, mmap_mode="r")
+        return self._mm[i]
+
+    def build(self, threads: int = 8) -> None:
+        """Decode every image into the cache file if it is not there yet."""
+        if self.path.exists() or not self.paths:
+            return
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(f".{os.getpid()}.tmp.npy")  # per process, in case workers race
+        mm = np.lib.format.open_memmap(tmp, mode="w+", dtype=np.uint8, shape=(len(self.paths), *self.shape, 3))
+        h, w = self.shape
+
+        def decode(i: int) -> None:
+            img = cv2.imread(str(self.paths[i]), cv2.IMREAD_REDUCED_COLOR_2)
+            ih, iw = img.shape[:2]
+            if (ih, iw) != (h, w):  # centre-cut to the bank's aspect, then resize
+                if iw / ih > w / h:
+                    cut = round(ih * w / h)
+                    img = img[:, (iw - cut) // 2 : (iw - cut) // 2 + cut]
+                else:
+                    cut = round(iw * h / w)
+                    img = img[(ih - cut) // 2 : (ih - cut) // 2 + cut]
+                img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+            mm[i] = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        with ThreadPoolExecutor(threads) as pool:  # cv2 releases the GIL while decoding
+            list(tqdm(pool.map(decode, range(len(self.paths))), total=len(self.paths), desc=f"caching {self.path.name}", leave=False))
+        mm.flush()
+        tmp.replace(self.path)
+
+
+class CardBank(ImageBank):
+    def __init__(self, paths: list[Path] | None = None):
+        super().__init__(paths if paths is not None else list_cards(), CARD_SHAPE, "cards")
+
+    def load(self, i: int, short: float) -> np.ndarray:
+        """The card at index `i` with at least `short` pixels across: the half-res bank copy, or
+        the full JPEG when the card is drawn larger than that. `short` is measured in output
+        pixels, so with the 2.5x scene downscale the bank covers every card size the renderer
+        draws and no scene decodes a JPEG."""
+        if short > self.shape[1]:
+            return load_rgb(self.paths[i])
+        return self[i]
+
+
+class ArtBank(ImageBank):
+    def __init__(self, paths: list[Path] | None = None, n: int = BG_ARTS, seed: int = 0):
+        arts = paths if paths is not None else list_arts()
+        if len(arts) > n:
+            pick = np.sort(np.random.default_rng(seed).choice(len(arts), n, replace=False))
+            arts = [arts[int(i)] for i in pick]
+        super().__init__(arts, ART_SHAPE, "arts")
 
 
 def rounded_mask(w: int, h: int, radius: float) -> np.ndarray:
@@ -74,13 +162,6 @@ def quad_from_pose(cx: float, cy: float, short: float, angle_deg: float, rng: np
     return (box @ rot.T + np.float32([cx, cy])).astype(np.float32)
 
 
-def load_card(path: Path, short: float) -> np.ndarray:
-    """Decode a full-card JPEG at half resolution when the rendered card is small enough that
-    the extra pixels would only be averaged away (JPEG DCT scaling makes this ~3x faster)."""
-    flag = cv2.IMREAD_REDUCED_COLOR_2 if short < 230 else cv2.IMREAD_COLOR
-    return cv2.cvtColor(cv2.imread(str(path), flag), cv2.COLOR_BGR2RGB)
-
-
 def quad_roi(quad: np.ndarray, shape: tuple[int, ...]) -> tuple[int, int, int, int] | None:
     """Bounding box of `quad` clipped to the canvas (x0, y0, x1, y1), or None if outside.
     Warps only touch this box; a small card on a big canvas is the common case."""
@@ -105,7 +186,9 @@ def warp_alpha(alpha: np.ndarray, quad: np.ndarray, shape: tuple[int, ...]) -> n
 
 def paste(canvas: np.ndarray, img: np.ndarray, alpha: np.ndarray, quad: np.ndarray) -> np.ndarray:
     """Warp `img` (with float alpha) so its corners land on `quad` and blend onto the canvas.
-    Returns the warped alpha (canvas-sized) so callers can draw shadows and sleeve effects."""
+    Returns the warped alpha (canvas-sized) so callers can draw shadows and sleeve effects.
+    The blend is `dst += (src - dst) * a` in place over the quad's bounding box: three passes
+    over the box instead of the four temporaries of `src * a + dst * (1 - a)`."""
     full_alpha = warp_alpha(alpha, quad, canvas.shape)
     roi = quad_roi(quad, canvas.shape)
     if roi is None:
@@ -113,10 +196,13 @@ def paste(canvas: np.ndarray, img: np.ndarray, alpha: np.ndarray, quad: np.ndarr
     x0, y0, x1, y1 = roi
     h, w = img.shape[:2]
     H = cv2.getPerspectiveTransform(PRINTED * np.float32([w, h]), (quad - np.float32([x0, y0])).astype(np.float32))
-    warped = cv2.warpPerspective(img, H, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR)
+    # converting the (small) source to float before the warp is cheaper than converting the warp
+    src = cv2.warpPerspective(np.asarray(img, dtype=np.float32), H, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR)
     a = full_alpha[y0:y1, x0:x1, None]
     dst = canvas[y0:y1, x0:x1]
-    dst[:] = warped.astype(np.float32) * a + dst * (1 - a)
+    src -= dst
+    src *= a
+    dst += src
     return full_alpha
 
 
@@ -131,51 +217,61 @@ def expand(quad: np.ndarray, factor: float) -> np.ndarray:
     return ((quad - c) * factor + c).astype(np.float32)
 
 
-def background(rng: np.random.Generator, arts: list[Path], size: int) -> np.ndarray:
+def background(rng: np.random.Generator, arts: ArtBank, size: int) -> np.ndarray:
+    """Float32 `size` x `size` x 3 table surface. Full-canvas passes go through cv2 (SIMD, no
+    broadcasting temporaries); numpy's broadcast fills and `[..., None]` multiplies cost more
+    here than the warp itself."""
     kind = rng.choice(["art", "flat", "gradient", "tiled"], p=[0.45, 0.35, 0.1, 0.1])
     if kind == "art" and arts:
-        img = load_card(arts[int(rng.integers(len(arts)))], 0)  # half-res decode; it is blown up anyway
+        img = np.asarray(arts[int(rng.integers(len(arts)))], dtype=np.float32)  # half res; blown up anyway
         # cover the canvas at 1-2.5x so the mat's artwork is at playmat scale, any rotation
         scale = rng.uniform(1.0, 2.5) * size / min(img.shape[:2])
+        # a slightly out-of-focus mat: blur the small source by sigma/scale, which is what a
+        # blur of sigma on the upscaled canvas looks like, at a fraction of the pixels
+        sigma = rng.uniform(0, 2.0) / scale
+        if sigma > 0.12:
+            img = cv2.GaussianBlur(img, (0, 0), sigma)
         M = cv2.getRotationMatrix2D((img.shape[1] / 2, img.shape[0] / 2), rng.uniform(0, 360), scale)
         M[:, 2] += np.float32([size / 2, size / 2]) - np.float32([img.shape[1] / 2, img.shape[0] / 2])
         M[:, 2] += rng.uniform(-0.3, 0.3, size=2) * size
-        bg = cv2.warpAffine(img, M, (size, size), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT).astype(np.float32)
-        sigma = rng.uniform(0, 2.0)
-        if sigma > 0.3:
-            bg = cv2.GaussianBlur(bg, (0, 0), sigma)
+        bg = cv2.warpAffine(img, M, (size, size), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     elif kind == "tiled" and arts:
-        img = load_rgb(arts[int(rng.integers(len(arts)))])
+        img = arts[int(rng.integers(len(arts)))]
         tile = int(rng.integers(40, 160))
         t = cv2.resize(img, (tile, tile), interpolation=cv2.INTER_AREA)
         reps = size // tile + 2
         bg = np.tile(t, (reps, reps, 1))[:size, :size].astype(np.float32)
     elif kind == "gradient":
-        c0, c1 = rng.uniform(0, 255, size=3), rng.uniform(0, 255, size=3)
-        t = np.linspace(0, 1, size, dtype=np.float32)
-        if rng.random() < 0.5:
-            t = t[None, :, None]
-        else:
-            t = t[:, None, None]
-        bg = c0 * (1 - t) + c1 * t
-        bg = np.broadcast_to(bg, (size, size, 3)).copy()
+        c0, c1 = rng.uniform(0, 255, size=3).astype(np.float32), rng.uniform(0, 255, size=3).astype(np.float32)
+        t = np.linspace(0, 1, size, dtype=np.float32)[:, None]
+        strip = c0 * (1 - t) + c1 * t  # (size, 3): one colour per row
+        horizontal = rng.random() < 0.5
+        bg = cv2.resize(strip[None] if horizontal else strip[:, None], (size, size), interpolation=cv2.INTER_NEAREST)
     else:
         # desks and plain mats: white, grey, black, wood, felt green/blue/red
         palette = np.float32([[240, 240, 238], [200, 200, 195], [30, 30, 32], [120, 80, 45], [160, 120, 80], [40, 90, 50], [40, 50, 100], [110, 30, 30]])
         col = palette[int(rng.integers(len(palette)))] * rng.uniform(0.8, 1.1)
-        bg = np.broadcast_to(col, (size, size, 3)).copy()
-        bg += rng.normal(0, rng.uniform(1, 8), size=bg.shape).astype(np.float32)
-    # uneven lighting across the table
-    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32) / size
-    gx, gy = rng.uniform(-0.25, 0.25, size=2)
-    bg *= (1 + gx * (xx - 0.5) * 2 + gy * (yy - 0.5) * 2)[..., None]
-    return np.clip(bg, 0, 255)
+        # monochrome grain (paper, felt, wood texture) at half resolution: the scene is
+        # downscaled 2.5x for the detector anyway, and colour noise is the sensor's job.
+        # Uniform noise with the same std as the old Gaussian; drawing it is 6x cheaper.
+        grain = (rng.random(size=(size // 2, size // 2), dtype=np.float32) - 0.5) * np.float32(rng.uniform(1, 8) * np.sqrt(12))
+        grain = cv2.resize(grain, (size, size), interpolation=cv2.INTER_LINEAR)
+        bg = cv2.merge([grain, grain, grain])
+        cv2.add(bg, (*(float(c) for c in col), 0.0), dst=bg)
+    # uneven lighting across the table: a linear ramp, so it separates into a row and a column
+    # vector (no full-size meshgrid)
+    ramp = (np.arange(size, dtype=np.float32) / size - 0.5) * 2
+    gx, gy = rng.uniform(-0.25, 0.25, size=2).astype(np.float32)
+    light = 1 + gx * ramp[None, :] + gy * ramp[:, None]
+    cv2.multiply(bg, cv2.merge([light, light, light]), dst=bg)
+    return np.clip(bg, 0, 255, out=bg)
 
 
-def card_face(rng: np.random.Generator, path: Path, short: float) -> tuple[np.ndarray, np.ndarray]:
+def card_face(rng: np.random.Generator, cards: CardBank, index: int, short: float, detail: float = DET_INPUT / SCENE) -> tuple[np.ndarray, np.ndarray]:
     """A card image and its alpha. Sometimes cut inside the black border so the scene has
-    borderless/extended-art cards even when the sample does not."""
-    img = load_card(path, short)
+    borderless/extended-art cards even when the sample does not. `short` is the drawn size in
+    canvas pixels and `detail` the canvas-to-output scale."""
+    img = cards.load(index, short * detail)
     h, w = img.shape[:2]
     if rng.random() < 0.2:
         ix, iy = int(w * rng.uniform(0.035, 0.07)), int(h * rng.uniform(0.035, 0.07))
@@ -184,13 +280,23 @@ def card_face(rng: np.random.Generator, path: Path, short: float) -> tuple[np.nd
     return img, rounded_mask(w, h, CORNER_RADIUS * w)
 
 
-def draw_card(canvas: np.ndarray, rng: np.random.Generator, path: Path, quad: np.ndarray, shadow: bool = True) -> np.ndarray:
-    img, alpha = card_face(rng, path, quad_short(quad))
+def draw_card(canvas: np.ndarray, rng: np.random.Generator, cards: CardBank, quad: np.ndarray, shadow: bool = True, detail: float = DET_INPUT / SCENE) -> np.ndarray:
+    """Draw a random card from the bank on `quad`; returns its canvas-sized alpha."""
+    if quad_roi(quad, canvas.shape) is None:  # entirely outside the window: nothing to decode
+        return np.zeros(canvas.shape[:2], np.float32)
+    img, alpha = card_face(rng, cards, int(rng.integers(len(cards))), quad_short(quad), detail)
     if shadow and rng.random() < 0.7:
         # soft drop shadow: darken under a shifted, blurred copy of the card's alpha
-        sh = warp_alpha(alpha, quad + rng.uniform(-6, 6, size=2).astype(np.float32), canvas.shape)
-        sh = cv2.GaussianBlur(sh, (0, 0), rng.uniform(2, 6))
-        canvas *= 1 - sh[..., None] * rng.uniform(0.15, 0.45)
+        sh_quad = quad + rng.uniform(-6, 6, size=2).astype(np.float32)
+        sigma = rng.uniform(2, 6)
+        roi = quad_roi(expand(sh_quad, 1 + 4 * sigma / quad_short(sh_quad)), canvas.shape)  # room for the blur tail
+        if roi is not None:
+            x0, y0, x1, y1 = roi
+            sh = warp_alpha(alpha, sh_quad, canvas.shape)[y0:y1, x0:x1]
+            sh = cv2.GaussianBlur(sh, (0, 0), sigma)
+            sh *= -rng.uniform(0.15, 0.45)
+            sh += 1
+            canvas[y0:y1, x0:x1] *= sh[..., None]
     return paste(canvas, img, alpha, quad)
 
 
@@ -217,34 +323,41 @@ def draw_sleeve_ring(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndar
 
 def gloss(canvas: np.ndarray, rng: np.random.Generator, alpha: np.ndarray, quad: np.ndarray) -> None:
     """Sleeve/foil sheen over the card: a milky tint plus a highlight band or blob."""
-    size = canvas.shape[0]
+    # `alpha` is zero outside the sleeve ring, which sits within ~1.1x the card; work in that box
+    roi = quad_roi(expand(quad, 1.2), canvas.shape)
+    if roi is None:
+        return
+    x0, y0, x1, y1 = roi
+    a = alpha[y0:y1, x0:x1]
+    dst = canvas[y0:y1, x0:x1]
     tint = rng.uniform(0.03, 0.15)
-    canvas[:] = canvas * (1 - alpha[..., None] * tint) + 235 * alpha[..., None] * tint
+    dst += (235 - dst) * (a * tint)[..., None]
     if rng.random() < 0.7:
-        # highlights are smooth, so compute them on a coarse grid and upsample
-        coarse = size // 4
-        yy, xx = np.mgrid[0:coarse, 0:coarse].astype(np.float32) * 4 + 2
+        # highlights are smooth, so compute them on a coarse grid over the box and upsample
+        step = 4
+        xs = np.arange(x0, x1, step, dtype=np.float32) + step / 2
+        ys = np.arange(y0, y1, step, dtype=np.float32) + step / 2
         c = quad.mean(axis=0)
         s = quad_short(quad)
         if rng.random() < 0.5:  # band across the card, any direction
-            a = rng.uniform(0, np.pi)
-            d = (xx - c[0]) * np.cos(a) + (yy - c[1]) * np.sin(a) + rng.uniform(-0.5, 0.5) * s
+            ang = rng.uniform(0, np.pi)
+            d = (xs - c[0])[None, :] * np.cos(ang) + (ys - c[1])[:, None] * np.sin(ang) + rng.uniform(-0.5, 0.5) * s
             band = np.exp(-((d / (rng.uniform(0.06, 0.25) * s)) ** 2))
         else:
             gx, gy = c + rng.uniform(-0.5, 0.5, size=2) * s
-            band = np.exp(-(((xx - gx) / (rng.uniform(0.2, 0.6) * s)) ** 2 + ((yy - gy) / (rng.uniform(0.2, 0.6) * s)) ** 2))
-        band = cv2.resize(band, (size, size), interpolation=cv2.INTER_LINEAR)
-        canvas[:] = canvas + (band * alpha)[..., None] * rng.uniform(40, 160)
+            band = np.exp(-(((xs - gx)[None, :] / (rng.uniform(0.2, 0.6) * s)) ** 2 + ((ys - gy)[:, None] / (rng.uniform(0.2, 0.6) * s)) ** 2))
+        band = cv2.resize(band.astype(np.float32), (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
+        dst += (band * a * rng.uniform(40, 160))[..., None]
 
 
-def occluders(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndarray, cards: list[Path]) -> None:
+def occluders(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndarray, cards: CardBank, detail: float = DET_INPUT / SCENE) -> None:
     c = quad.mean(axis=0)
     s = quad_short(quad)
     if rng.random() < 0.15:  # another card lying partly over this one (aura, equipment, a sloppy stack)
         off = rng.uniform(0.6, 1.1) * s
         a = rng.uniform(0, 2 * np.pi)
         q = quad_from_pose(c[0] + off * np.cos(a), c[1] + off * np.sin(a), s * rng.uniform(0.9, 1.1), rng.uniform(0, 360), rng)
-        draw_card(canvas, rng, cards[int(rng.integers(len(cards)))], q)
+        draw_card(canvas, rng, cards, q, detail=detail)
     if rng.random() < 0.3:  # dice and counters
         for _ in range(int(rng.integers(1, 4))):
             r = int(rng.uniform(0.05, 0.13) * s)
@@ -270,10 +383,12 @@ def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_I
     """Webcam look: exposure, white balance, gamma, saturation, defocus, sensor noise, and
     the stream's compression. Applied at detector-input resolution, so blur and noise are
     scaled by `scale` (native px -> input px) from what a 1080p sensor produces. Returns uint8."""
-    x = img.astype(np.float32) * rng.uniform(0.85, 1.15, size=3).astype(np.float32)
-    x = (x - 128) * rng.uniform(0.75, 1.25) + 128 + rng.uniform(-30, 30)
-    x = np.clip(x, 0, 255)
-    x = 255 * (x / 255) ** rng.uniform(0.8, 1.25)
+    # exposure/white balance/contrast/brightness/gamma are per-value maps, so apply them to the
+    # 256-entry channel LUTs rather than to every pixel
+    levels = np.arange(256, dtype=np.float32)[:, None] * rng.uniform(0.85, 1.15, size=3).astype(np.float32)
+    levels = (levels - 128) * rng.uniform(0.75, 1.25) + 128 + rng.uniform(-30, 30)
+    levels = (255 * (np.clip(levels, 0, 255) / 255) ** rng.uniform(0.8, 1.25)).astype(np.float32)
+    x = np.stack([levels[:, ch][img[..., ch]] for ch in range(3)], axis=2)
     gray = x.mean(axis=2, keepdims=True)
     x = gray + (x - gray) * rng.uniform(0.7, 1.2)
     sigma = rng.uniform(0, 1.6) * scale
@@ -286,14 +401,14 @@ def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_I
         kernel = cv2.warpAffine(kernel, cv2.getRotationMatrix2D((k / 2 - 0.5, k / 2 - 0.5), rng.uniform(0, 180), 1.0), (k, k))
         x = cv2.filter2D(x, -1, kernel / max(kernel.sum(), 1e-6))
     # averaging 1/scale^2 sensor pixels per input pixel shrinks the noise by `scale`
-    x = x + rng.normal(0, rng.uniform(1, 8) * max(scale, 0.4), size=x.shape).astype(np.float32)
-    x = np.clip(x, 0, 255).astype(np.uint8)
+    x += rng.standard_normal(size=x.shape, dtype=np.float32) * np.float32(rng.uniform(1, 8) * max(scale, 0.4))
+    x = np.clip(x, 0, 255, out=x).astype(np.uint8)
     quality = int(rng.integers(50, 95))
     _ok, enc = cv2.imencode(".jpg", cv2.cvtColor(x, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality])
     return cv2.cvtColor(cv2.imdecode(enc, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 
 
-def render_scene(rng: np.random.Generator, cards: list[Path], arts: list[Path], size: int = SCENE, out: int = DET_INPUT) -> tuple[np.ndarray, np.ndarray]:
+def render_scene(rng: np.random.Generator, cards: CardBank, arts: ArtBank, size: int = SCENE, out: int = DET_INPUT) -> tuple[np.ndarray, np.ndarray]:
     """Compose a `size` x `size` native-pixel window and return it downscaled to `out` x `out`
     RGB uint8 with the 4x2 float32 printed-order corners of the clicked card in `out` pixels."""
     canvas = background(rng, arts, size)
@@ -303,7 +418,7 @@ def render_scene(rng: np.random.Generator, cards: list[Path], arts: list[Path], 
     # neighbours underneath: other cards at a similar scale anywhere in the window
     for _ in range(int(rng.integers(0, 4))):
         q = quad_from_pose(rng.uniform(0, size), rng.uniform(0, size), short * rng.uniform(0.7, 1.3), rng.uniform(0, 360), rng)
-        draw_card(canvas, rng, cards[int(rng.integers(len(cards)))], q)
+        draw_card(canvas, rng, cards, q, detail=out / size)
     # pose the clicked card so a random point on its face sits at the window centre
     quad = quad_from_pose(0, 0, short, angle, rng)
     u, v = rng.uniform(0.05, 0.95), rng.uniform(0.05, 0.95)
@@ -313,13 +428,13 @@ def render_scene(rng: np.random.Generator, cards: list[Path], arts: list[Path], 
     ring_alpha = None
     if sleeved:
         _, ring_alpha = draw_sleeve_ring(canvas, rng, quad)
-    card_alpha = draw_card(canvas, rng, cards[int(rng.integers(len(cards)))], quad, shadow=not sleeved)
+    card_alpha = draw_card(canvas, rng, cards, quad, shadow=not sleeved, detail=out / size)
     if sleeved:
         gloss(canvas, rng, np.maximum(card_alpha, ring_alpha), quad)
     elif rng.random() < 0.25:  # foil or a glossy unsleeved card
         gloss(canvas, rng, card_alpha, quad)
-    occluders(canvas, rng, quad, cards)
-    small = cv2.resize(np.clip(canvas, 0, 255).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA)
+    occluders(canvas, rng, quad, cards, detail=out / size)
+    small = cv2.resize(np.clip(canvas, 0, 255, out=canvas).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA)
     return photometrics(small, rng, out / size), (quad * (out / size)).astype(np.float32)
 
 
@@ -345,10 +460,12 @@ class SceneDataset(Dataset):
     uint8 scene (normalise batches with `batch_to_input`) and the quad in [0, 1] window units,
     or in pixels with `raw`."""
 
-    def __init__(self, length: int, cards: list[Path] | None = None, arts: list[Path] | None = None, seed: int = 0, raw: bool = False):
+    def __init__(self, length: int, cards: CardBank | None = None, arts: ArtBank | None = None, seed: int = 0, raw: bool = False):
         self.length = length
-        self.cards = cards or list_cards()
-        self.arts = arts if arts is not None else list_arts()
+        self.cards = cards or CardBank()
+        self.arts = arts if arts is not None else ArtBank()
+        self.cards.build()  # in the parent, so workers find the cache instead of each building it
+        self.arts.build()
         self.seed = seed
         self.raw = raw
         self.epoch = 0
@@ -437,7 +554,7 @@ class RealSceneDataset(Dataset):
 
 def sheet(n: int, seed: int, out: Path) -> None:
     rng = np.random.default_rng(seed)
-    cards, arts = list_cards(), list_arts()
+    cards, arts = CardBank(), ArtBank()
     tiles = []
     for _ in range(n):
         scene, quad = render_scene(rng, cards, arts)

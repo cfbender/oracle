@@ -164,18 +164,28 @@ uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --real --detector classical
 ```
 
-Rendering is ~60 ms per scene on one core, so a 20k-sample epoch needs ~80 s of 15 workers
-and the GPU idles; on CPU the model step dominates instead. `bench_loader --detector` times the
-renderer single-threaded, the DataLoader at each `--workers` count, and the CornerNet step
-separately, which is the first thing to run when epochs take longer than that arithmetic says.
-The default is one worker per logical CPU minus one; on an SMT desktop (8 cores / 16 threads)
-that oversubscribes the physical cores and 8 workers deliver ~50% more samples/s than 15, so
-sweep `--workers 6 8 10 12` in the bench and pass the winner to `train_detector`. Guest VMs
-report SMT topology too but often scale like full cores, so the trainer does not guess. If the
-samples/s barely move with the worker count, the main process is the cap: batches are staged
-in pinned host memory on GPU runs, which is slow to allocate on some ROCm setups, so compare
-with `--no-pin` (both tools take it). The datasets ship uint8 scenes and normalise on the
-device, so each sample is 196 KB through the queue rather than 786 KB.
+Rendering is ~24 ms per scene on one core (was 60), so 8 workers give roughly 330 samples/s
+and a 20k-sample epoch is ~60 s of rendering; on CPU the model step dominates instead.
+The first run decodes the card images and a fixed 1,500-art subset of the gallery at half
+resolution into memory-mapped banks under `data/cache/` (`cards-*.npy`, `arts-*.npy`;
+~1 GB for 3,000 cards, shared by all workers through the page cache). JPEG decoding is
+entropy-bound, ~5 ms per image whatever the reduced-size flag, and was a quarter of the render
+time; the banks lose nothing because the 640 px window is downscaled 2.5x for the detector.
+Delete the cache directory to rebuild it after changing `data/cards` or `data/art`.
+`python -m cardid.profile_synth` prints ms/scene and the cProfile hot spots of the renderer.
+
+`bench_loader --detector` times the renderer single-threaded, the same render inside N plain
+processes (what the CPU does under all-core load, separately from the loader), the DataLoader
+at each `--workers` count, and the CornerNet step, which is the first thing to run when epochs
+take longer than that arithmetic says. The default is one worker per logical CPU minus one; on
+an SMT desktop (8 cores / 16 threads) that oversubscribes the physical cores and 8 workers
+deliver more samples/s than 15, so sweep `--workers 6 8 10 12` in the bench and pass the winner
+to `train_detector`. Guest VMs report SMT topology too but often scale like full cores, so the
+trainer does not guess. If the samples/s barely move with the worker count, the main process
+is the cap: batches are staged in pinned host memory on GPU runs, which is slow to allocate on
+some ROCm setups, so compare with `--no-pin` (both tools take it). The datasets ship uint8
+scenes and normalise on the device, so each sample is 196 KB through the queue rather than
+786 KB.
 
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 

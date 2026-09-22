@@ -14,4 +14,5 @@ ML_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ML_DIR / "data"
 ART_DIR = DATA_DIR / "art"
 CARD_DIR = DATA_DIR / "cards"  # full-card `normal` images, for rendering detector scenes
+CACHE_DIR = DATA_DIR / "cache"  # decoded image banks for the scene renderer (rebuilt on demand)
 RUNS_DIR = DATA_DIR / "runs"
