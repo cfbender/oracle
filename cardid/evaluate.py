@@ -106,6 +106,10 @@ def print_misses(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: 
         )
         if "quad_err" in infos[i]:
             line += f", detector quad {infos[i]['quad_err'] * 100:.1f}% of short side off the label"
+        if "other_orientation" in infos[i]:
+            art, sim, top = infos[i]["other_orientation"]
+            rank = np.where(top == targets[i])[0]
+            line += f"\n      other orientation: {art['name']} [{art['set']}] sim {sim:.3f}, truth {'rank ' + str(rank[0] + 1) if len(rank) else 'not in top 5'}"
         print(line)
 
 
@@ -168,7 +172,14 @@ def main() -> None:
             # capture.py keeps the orientation whose best match is most similar
             idx, sims = idx.reshape(-1, per_query, 5), sims.reshape(-1, per_query, 5)
             pick = sims[:, :, 0].argmax(axis=1)
-            idx, sims = idx[np.arange(len(idx)), pick], sims[np.arange(len(sims)), pick]
+            rows = np.arange(len(idx))
+            other = idx[rows, 1 - pick], sims[rows, 1 - pick]
+            for i, info in enumerate(infos):
+                info["other_orientation"] = (arts[other[0][i, 0]], float(other[1][i, 0]), other[0][i])
+            # what a correct up/down decision would recover: the truth is top-1 in either orientation
+            oracle = (idx[:, :, 0] == targets[:, None]).any(axis=1).mean()
+            idx, sims = idx[rows, pick], sims[rows, pick]
+            print(f"orientation oracle top1 (truth is top-1 in either orientation): {oracle:.2f}")
         report(idx, sims, targets, infos, label)
         if args.real:
             print_misses(idx, sims, targets, infos, arts)

@@ -7,7 +7,8 @@ bottom-left of the card face, in scene pixels.
 
 What the renderer varies, because each is a failure mode of the classical edge finder:
 busy playmats (random art crops as background), sleeves (a ring outside the card plus a
-glossy tint and glare over it), borderless cards (the card image cropped inside its border),
+glossy tint and glare over it), rigid top-loaders (a larger clear rectangle with a specular
+edge), borderless cards (the card image cropped inside its border),
 neighbouring and overlapping cards, dice and fingers, any rotation, mild perspective, and
 webcam photometrics.
 
@@ -321,10 +322,47 @@ def draw_sleeve_ring(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndar
     return ring, ring_alpha
 
 
+def draw_toploader(canvas: np.ndarray, rng: np.random.Generator, quad: np.ndarray) -> np.ndarray:
+    """A rigid top-loader (or semi-rigid card saver) around the card: a clear rectangle about
+    a fifth larger than the card with square corners, a specular edge line where the plastic
+    catches the light, a slight haze, and the card sitting low inside because the loader is
+    open at the top. Its corners are a card-shaped rectangle a few percent of the short side
+    outside the real ones, exactly where the corner heatmap would otherwise fire.
+    Returns the loader alpha (canvas-sized) for the gloss pass."""
+    short = quad_short(quad)
+    up = (quad[0] - quad[3]) / np.linalg.norm(quad[0] - quad[3])
+    sx, sy = rng.uniform(1.12, 1.26), rng.uniform(1.08, 1.2)  # 76x102 mm around 63x88, with some slop
+    c = quad.mean(axis=0)
+    right = (quad[1] - quad[0]) / np.linalg.norm(quad[1] - quad[0])
+    hw, hh = short * sx / 2, short * 88 / 63 * sy / 2
+    # the card rests on the loader's bottom edge: shift the loader up by most of the spare height
+    c = c + up * rng.uniform(0.3, 1.0) * (hh - short * 88 / 63 / 2)
+    loader = np.float32([c - right * hw + up * hh, c + right * hw + up * hh, c + right * hw - up * hh, c - right * hw - up * hh])
+    unit = 200
+    haze = np.empty((int(unit * hh / hw), unit, 3), np.float32)
+    haze[:] = rng.uniform(200, 245, size=3)
+    alpha = np.full(haze.shape[:2], rng.uniform(0.04, 0.22), np.float32)
+    loader_alpha = paste(canvas, haze, alpha, loader)
+    roi = quad_roi(expand(loader, 1.05), canvas.shape)
+    if roi is not None:
+        # specular edge: a thin bright (or dark, when it shadows the mat) line along the plastic's edge
+        bright = rng.random() < 0.7
+        color = tuple(float(v) for v in (rng.uniform(190, 255, size=3) if bright else rng.uniform(10, 70, size=3)))
+        thickness = max(1, round(rng.uniform(0.008, 0.02) * short))
+        x0, y0, x1, y1 = roi
+        line = np.zeros((y1 - y0, x1 - x0), np.float32)
+        cv2.polylines(line, [np.round(loader - np.float32([x0, y0])).astype(np.int32)], True, 1.0, thickness, cv2.LINE_AA)
+        a = (line * rng.uniform(0.5, 1.0))[..., None]
+        dst = canvas[y0:y1, x0:x1]
+        dst += (np.float32(color) - dst) * a
+        np.maximum(loader_alpha[y0:y1, x0:x1], line, out=loader_alpha[y0:y1, x0:x1])
+    return loader_alpha
+
+
 def gloss(canvas: np.ndarray, rng: np.random.Generator, alpha: np.ndarray, quad: np.ndarray) -> None:
     """Sleeve/foil sheen over the card: a milky tint plus a highlight band or blob."""
-    # `alpha` is zero outside the sleeve ring, which sits within ~1.1x the card; work in that box
-    roi = quad_roi(expand(quad, 1.2), canvas.shape)
+    # `alpha` is zero outside the sleeve ring or top-loader, which sit within ~1.3x the card; work in that box
+    roi = quad_roi(expand(quad, 1.4), canvas.shape)
     if roi is None:
         return
     x0, y0, x1, y1 = roi
@@ -425,11 +463,16 @@ def render_scene(rng: np.random.Generator, cards: CardBank, arts: ArtBank, size:
     click = (1 - v) * ((1 - u) * quad[0] + u * quad[1]) + v * ((1 - u) * quad[3] + u * quad[2])
     quad = quad - click + np.float32([size / 2, size / 2]) + rng.uniform(-12, 12, size=2).astype(np.float32)
     sleeved = rng.random() < 0.55
+    loader_alpha = draw_toploader(canvas, rng, quad) if rng.random() < 0.15 else None
     ring_alpha = None
     if sleeved:
         _, ring_alpha = draw_sleeve_ring(canvas, rng, quad)
     card_alpha = draw_card(canvas, rng, cards, quad, shadow=not sleeved, detail=out / size)
-    if sleeved:
+    if loader_alpha is not None:
+        # the loader's plastic catches the light over card, sleeve and its own margin alike
+        alpha = np.maximum(card_alpha, loader_alpha) if ring_alpha is None else np.maximum(np.maximum(card_alpha, ring_alpha), loader_alpha)
+        gloss(canvas, rng, alpha, quad)
+    elif sleeved:
         gloss(canvas, rng, np.maximum(card_alpha, ring_alpha), quad)
     elif rng.random() < 0.25:  # foil or a glossy unsleeved card
         gloss(canvas, rng, card_alpha, quad)
