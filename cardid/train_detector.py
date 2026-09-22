@@ -38,7 +38,7 @@ from .detector import (
     quad_to_pose,
     snap_corners,
 )
-from .model import describe_device, pick_device
+from .model import describe_device, gpu, pick_device
 from .real import REAL_DIR, load_labels
 from .synth import DET_INPUT, RealSceneDataset, SceneDataset, batch_to_input, quad_short
 
@@ -129,7 +129,7 @@ def main() -> None:
     cv2.setNumThreads(0)
     device = pick_device(args.device)
     cores = os.cpu_count() or 8
-    if device.type == "cuda":
+    if gpu(device):
         workers, threads = max(2, cores - 1), 2
     else:
         workers, threads = max(2, cores // 2), max(2, cores - cores // 2)

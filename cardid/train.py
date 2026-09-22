@@ -27,7 +27,7 @@ from tqdm import tqdm
 from . import RUNS_DIR
 from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
 from .evaluate import cosine_topk, embed_images
-from .model import ArcFaceHead, Embedder, describe_device, info_nce, pick_device
+from .model import ArcFaceHead, Embedder, describe_device, gpu, info_nce, pick_device
 from .real import RealDataset, load_labels, real_eval_queries
 
 
@@ -66,7 +66,7 @@ def main() -> None:
     # concurrently. On CPU they share the cores, so split them; on GPU the model needs almost
     # no CPU and augmentation is the bottleneck, so it gets nearly everything.
     cores = os.cpu_count() or 8
-    if device.type == "cuda":
+    if gpu(device):
         workers, threads = max(2, cores - 1), 2
     else:
         workers, threads = max(2, cores // 2), max(2, cores - cores // 2)

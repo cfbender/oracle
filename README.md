@@ -37,8 +37,11 @@ the gallery grows to every downloaded art. First `gallery_images` call decodes a
 
 ## GPU training (AMD RX 9070 XT / ROCm)
 
-`train` and `evaluate` take `--device auto|cpu|cuda` (default `auto`; ROCm exposes AMD GPUs as
-`cuda`). The `rocm` extra installs AMD's own PyTorch wheels for gfx1201 with the ROCm 10.0
+`train`, `train_detector` and `evaluate` take `--device auto|cpu|cuda|mps` (default `auto`,
+which prefers `cuda`, then `mps`, then `cpu`; ROCm exposes AMD GPUs as `cuda`). On an Apple
+silicon Mac the plain `--extra cpu` install already includes the Metal backend, so `auto` picks
+`mps` with no extra setup; if an op turns out to be unsupported there, run with
+`PYTORCH_ENABLE_MPS_FALLBACK=1` or `--device cpu`. The `rocm` extra installs AMD's own PyTorch wheels for gfx1201 with the ROCm 10.0
 runtime bundled, so nothing but the `amdgpu` kernel driver is needed on the host
 ([AMD install page](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html);
 Python 3.11–3.14, Linux only, ~1.5 GB download):

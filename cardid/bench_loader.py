@@ -37,7 +37,7 @@ from .detector import (
     quad_to_pose,
 )
 from .evaluate import embed_images
-from .model import Embedder, describe_device, info_nce, pick_device
+from .model import Embedder, describe_device, gpu, info_nce, pick_device, sync
 from .synth import DET_INPUT, SceneDataset
 
 
@@ -81,13 +81,11 @@ def bench_model(device: torch.device, batch: int, steps: int, temperature: float
 
     for _ in range(3):
         step()
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+    sync(device)
     t0 = time.perf_counter()
     for _ in range(steps):
         step()
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+    sync(device)
     dt = time.perf_counter() - t0
     print(f"model fwd/bwd on {describe_device(device)}: {steps / dt:5.2f} batch/s, {steps * batch / dt:6.0f} samples/s")
     return model
@@ -108,13 +106,11 @@ def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
 
     for _ in range(3):
         step()
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+    sync(device)
     t0 = time.perf_counter()
     for _ in range(steps):
         step()
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+    sync(device)
     dt = time.perf_counter() - t0
     print(f"CornerNet fwd/bwd on {describe_device(device)}: {steps / dt:5.2f} batch/s, {steps * batch / dt:6.0f} samples/s")
 
@@ -188,7 +184,7 @@ def main() -> None:
     args = parser.parse_args()
     cv2.setNumThreads(0)
     device = pick_device(args.device)
-    torch.set_num_threads(2 if device.type == "cuda" else max(2, (os.cpu_count() or 8) // 2))
+    torch.set_num_threads(2 if gpu(device) else max(2, (os.cpu_count() or 8) // 2))
 
     if args.detector:
         if not args.skip_loader:

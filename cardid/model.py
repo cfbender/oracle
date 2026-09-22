@@ -16,18 +16,36 @@ EMBED_DIM = 128
 
 def pick_device(name: str = "auto") -> torch.device:
     """Resolve the --device flag. ROCm builds expose AMD GPUs through the `cuda` device type, so
-    `cuda` is the right spelling on the RX 9070 XT box as well as on NVIDIA."""
+    `cuda` is the right spelling on the RX 9070 XT box as well as on NVIDIA; Apple silicon is
+    `mps`. `auto` prefers cuda, then mps, then cpu."""
     if name == "auto":
-        name = "cuda" if torch.cuda.is_available() else "cpu"
+        name = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     device = torch.device(name)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise SystemExit("--device cuda requested but torch.cuda.is_available() is False (see ml/README.md, GPU training)")
+    if device.type == "mps" and not torch.backends.mps.is_available():
+        raise SystemExit("--device mps requested but torch.backends.mps.is_available() is False (macOS 12.3+ on Apple silicon)")
     return device
+
+
+def gpu(device: torch.device) -> bool:
+    """True when the model step runs off the CPU, so the CPU can be given to data workers."""
+    return device.type in ("cuda", "mps")
+
+
+def sync(device: torch.device) -> None:
+    """Wait for queued GPU work, so wall-clock timings measure the whole step."""
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
 
 
 def describe_device(device: torch.device) -> str:
     if device.type == "cuda":
         return f"{device} ({torch.cuda.get_device_name(device)}, torch {torch.__version__})"
+    if device.type == "mps":
+        return f"{device} (Apple Metal, torch {torch.__version__})"
     return f"{device} ({torch.get_num_threads()} threads, torch {torch.__version__})"
 
 
