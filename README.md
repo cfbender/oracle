@@ -105,10 +105,12 @@ card when the automatic quad is missing or wrong. The header shows running top-1
 what you have labeled and the server/round-trip milliseconds per click. Captures are split
 80/20 into train/eval by a hash of their id, so relabeling never moves a sample.
 
-Quad detection is classical for now (Canny + contour quads containing the click; the
-outermost of the nested card-shaped quads is the card edge, the smallest is the inner frame
-line) and stands in for the M2 detector. The stored `card.png` is the 250×350 warp, so the art
-box can be re-cut with jitter at train time and `ART_BOX` can change without recapturing.
+Without `--detector`, quad detection is classical (Canny + contour quads containing the
+click; the outermost of the nested card-shaped quads is the card edge, the smallest is the
+inner frame line). It fails on busy playmats, sleeves and borderless cards; see the detector
+section below. The stored `card.png` is the 250×350 warp, so the art box can be re-cut with
+jitter at train time and `ART_BOX` can change without recapturing. Each label also stores the
+crop and the quad used, which is what the detector trains and evaluates on.
 
 ```sh
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --real
@@ -118,6 +120,47 @@ uv run python -m cardid.train --resume data/runs/full/best.pt --real --epochs 4 
 `--real` mixes the train-split captures into every epoch (each repeated `--real-repeat` times,
 default 20, with only light box jitter and colour changes — the camera already supplied the
 resolution loss) and picks `best.pt` by top-1 on the held-out eval-split captures.
+
+## Card detector (M2): where is the card under the click?
+
+`cardid.detector` replaces the edge finder with a MobileNetV3-Small that looks at the 640 px
+window around the click (downscaled to 256) and predicts the card's *pose*: centre, short side
+and rotation, plus small bounded per-corner residuals for camera perspective. The corners are
+derived from a 63×88 rectangle at that pose, so the card's aspect ratio is built into the
+output rather than checked afterwards; the loss is the corner error under the best of the four
+cyclic corner orderings (a rotated card has no privileged first corner) plus a penalty on the
+residuals. Inference runs twice: once on the click window, then on a tight window around the
+first estimate for precision. It always returns a quad — a wrong one still gives the
+recogniser a guess to rank, which beats "nothing found".
+
+Training data is rendered by `cardid.synth` from full-card images composited onto busy
+backgrounds (random art crops as playmats, flat desks, gradients), with sleeves (a ring
+outside the card, a milky tint and glare over it), synthetic borderless cards (the image cut
+inside its border), neighbouring and overlapping cards, dice, fingers, any rotation and mild
+perspective, then webcam photometrics. Labeled real captures (`data/real`) can be mixed in
+with `--real`, augmented by re-windowing the stored crop at random rotation and scale.
+
+```sh
+uv run python -m cardid.scryfall --cards 3000                                  # 488x680 card images into data/cards (~5 min)
+uv run python -m cardid.synth --n 16 --out /tmp/scenes.png                     # eyeball the rendered scenes
+uv run python -m cardid.train_detector --epochs 10 --samples 20000 --batch 64 --run det
+uv run python -m cardid.train_detector --resume data/runs/det/best.pt --real --epochs 4 --run det-real
+uv run python -m cardid.capture --checkpoint data/runs/full/best.pt --detector data/runs/det-real/best.pt
+```
+
+The trainer reports the median corner error as a fraction of the card's short side and the
+share of samples under 5% ("hit", inside the recogniser's crop-jitter tolerance) on a fixed
+synthetic validation set and on the held-out real captures (`real` = single pass on the click
+window, `real_e2e` = the two-stage `Detector.locate` capture uses). The number that matters
+is identification accuracy with detector quads instead of the stored ones:
+
+```sh
+uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --real --detector data/runs/det/best.pt
+uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --real --detector classical
+```
+
+Rendering is ~60 ms per scene on one core, so a 20k-sample epoch needs ~80 s of 15 workers
+and the GPU idles; on CPU the model step dominates instead.
 
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 

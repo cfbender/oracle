@@ -3,11 +3,13 @@
 Usage:
     uv run python -m cardid.scryfall --train 5000 --eval 1000   # 6k sample (~25 min at 10 req/s)
     uv run python -m cardid.scryfall --all                       # then everything else as train
+    uv run python -m cardid.scryfall --cards 3000                # full-card images for the detector
 
 Writes:
     data/unique-artwork.jsonl.gz   raw bulk file
     data/arts.json                 sampled entries: [{id, name, set, split, url}]
     data/art/<id>.jpg              art_crop images
+    data/cards/<id>.jpg            `normal` full-card images (488x680) of a random subset
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from pathlib import Path
 import httpx
 from tqdm import tqdm
 
-from . import ART_DIR, DATA_DIR
+from . import ART_DIR, CARD_DIR, DATA_DIR
 
 BULK_URL = "https://api.scryfall.com/bulk-data"
 HEADERS = {
@@ -103,12 +105,12 @@ def extend_to_all(existing: list[dict], entries: list[dict]) -> list[dict]:
     return existing + added
 
 
-def fetch_image(client: httpx.Client, entry: dict) -> tuple[str, bool]:
-    dest = ART_DIR / f"{entry['id']}.jpg"
+def fetch_image(client: httpx.Client, entry: dict, dest_dir: Path = ART_DIR, url_key: str = "url") -> tuple[str, bool]:
+    dest = dest_dir / f"{entry['id']}.jpg"
     if dest.exists():
         return entry["id"], True
     try:
-        r = client.get(entry["url"], timeout=30)
+        r = client.get(entry[url_key], timeout=30)
         time.sleep(REQUEST_GAP_S)
         if r.status_code != 200:
             return entry["id"], False
@@ -118,16 +120,48 @@ def fetch_image(client: httpx.Client, entry: dict) -> tuple[str, bool]:
         return entry["id"], False
 
 
+def card_image_url(art_url: str) -> str:
+    """Scryfall serves every image version at the same path; only the version segment differs."""
+    return art_url.replace("/art_crop/", "/normal/", 1)
+
+
+def download_cards(client: httpx.Client, arts: list[dict], n: int, seed: int) -> None:
+    """Full-card images of `n` random train-split arts (the detector renders whole cards, so
+    the sample includes borderless, showcase, and old frames in whatever proportion Scryfall
+    has them). Deterministic in `seed`; rerunning with a larger `n` only adds cards."""
+    CARD_DIR.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(seed)
+    picked = [a for a in arts if a["split"] == "train"]
+    rng.shuffle(picked)
+    entries = [{"id": a["id"], "card_url": card_image_url(a["url"])} for a in picked[:n]]
+    failed = 0
+    with ThreadPoolExecutor(WORKERS) as pool:
+        futures = [pool.submit(fetch_image, client, e, CARD_DIR, "card_url") for e in entries]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="normal"):
+            failed += not fut.result()[1]
+    if failed:
+        print(f"{failed} card downloads failed; rerun to retry")
+    print(f"{len(list(CARD_DIR.glob('*.jpg')))} full-card images in {CARD_DIR}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", type=int, default=5000)
     parser.add_argument("--eval", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~49k images, ~3 GB)")
+    parser.add_argument("--cards", type=int, help="only download full-card images of this many random train arts into data/cards (~100 KB each)")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ART_DIR.mkdir(parents=True, exist_ok=True)
+    if args.cards:
+        arts_path = DATA_DIR / "arts.json"
+        if not arts_path.exists():
+            raise SystemExit("run the art_crop download first so data/arts.json exists")
+        with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
+            download_cards(client, json.loads(arts_path.read_text()), args.cards, args.seed)
+        return
     with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
         bulk = download_bulk(client, DATA_DIR / "unique-artwork.jsonl.gz")
         arts_path = DATA_DIR / "arts.json"

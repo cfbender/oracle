@@ -110,6 +110,30 @@ class RealDataset(Dataset):
         return to_tensor(self.cleans[row["label"]]), to_tensor(real), self.art_index[row["label"]]
 
 
+def real_detector_queries(rows: list[dict], gallery_index: dict[str, int], locate) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+    """Like `real_eval_queries`, but re-locate the card in the stored click crop with
+    `locate(crop_rgb, click) -> quad` instead of using the stored quad, so a detector can be
+    scored by the identification accuracy it produces. Returns two queries per capture (the
+    card and its 180-degree rotation, since the detector does not know which way is up);
+    the caller keeps whichever the recogniser is more confident about."""
+    from .detect import art_crop, card_orientations, warp_card
+
+    images, targets, infos = [], [], []
+    for r in rows:
+        if r["label"] not in gallery_index:
+            continue
+        crop = load_rgb(REAL_DIR / r["capture_id"] / "crop.jpg")
+        click = tuple(r.get("click") or (crop.shape[1] / 2, crop.shape[0] / 2))
+        quad = locate(crop, click)
+        for card in card_orientations(warp_card(crop, quad)):
+            images.append(art_crop(card))  # the same cut capture.py makes
+        targets.append(gallery_index[r["label"]])
+        infos.append({"width": int(r.get("art_px", 0)), "strong_perspective": False})
+    if not images:
+        raise SystemExit(f"no labeled real captures with crops in {LABELS}")
+    return np.stack(images), np.array(targets), infos
+
+
 def real_eval_queries(rows: list[dict], gallery_index: dict[str, int]) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """Held-out real captures as eval queries, with the same info keys `evaluate.report` uses."""
     images, targets, infos = [], [], []

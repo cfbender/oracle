@@ -1,12 +1,15 @@
 """Local click-to-identify tool for collecting and labeling real webcam captures.
 
-    uv run python -m cardid.capture --checkpoint data/runs/full/best.pt [--port 8765]
+    uv run python -m cardid.capture --checkpoint data/runs/full/best.pt [--detector data/runs/det/best.pt] [--port 8765]
 
 Open http://localhost:8765 in Chrome, allow the camera, and click a card in the live 1080p
 feed. The browser sends a full-resolution crop around the click; the server finds the card
 quad, warps it, cuts the art box, embeds it, and shows the top-5 candidates. Press 1-5 (or
 click a candidate) to confirm, type a name to search when none is right, or press S to skip.
 Shift-drag a rectangle around the card when the automatic quad is wrong or missing.
+
+With `--detector`, the quad comes from the learned `cardid.detector` (always returns one);
+without it, from the classical edge finder in `cardid.detect`.
 
 Everything labeled lands in data/real/ (see `cardid.real`) for `train --real` and
 `evaluate --real`. The page keeps a running top-1/top-5 over what you have labeled.
@@ -34,6 +37,7 @@ import torch
 
 from . import ART_DIR
 from .detect import art_crop, card_orientations, find_card_quad, order_corners, rect_to_quad, warp_card
+from .detector import Detector
 from .index import ArtIndex
 from .real import load_labels, save_label
 
@@ -43,8 +47,9 @@ PAGE = Path(__file__).with_name("capture.html")
 class Session:
     """Server-side state: the index plus captures that are identified but not yet labeled."""
 
-    def __init__(self, checkpoint: Path):
+    def __init__(self, checkpoint: Path, detector: Path | None = None):
         self.index = ArtIndex(checkpoint)
+        self.detector = Detector(detector) if detector else None
         self.pending: dict[str, dict] = {}
         self.lock = threading.Lock()
 
@@ -54,6 +59,9 @@ class Session:
             x0, y0, x1, y1 = rect
             quad = order_corners(rect_to_quad(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)))
             source = "manual"
+        elif self.detector is not None:
+            quad = self.detector.locate(crop, click)
+            source = "detector"
         else:
             quad = find_card_quad(crop, click)
             source = "auto"
@@ -204,13 +212,15 @@ def make_handler(session: Session):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--detector", help="CornerNet checkpoint from cardid.train_detector; omit to use the classical edge finder")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
     torch.set_num_threads(2)
-    session = Session(Path(args.checkpoint))
+    session = Session(Path(args.checkpoint), Path(args.detector) if args.detector else None)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(session))
-    print(f"gallery: {len(session.index.arts)} arts; open http://{args.host}:{args.port}")
+    locator = f"detector {args.detector}" if args.detector else "classical edge finder"
+    print(f"gallery: {len(session.index.arts)} arts; quads from {locator}; open http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -8,6 +8,7 @@ answers, which is what the UI will use to decide between "show card" and "show t
     uv run python -m cardid.evaluate --method pretrained
     uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/<run>/best.pt
     uv run python -m cardid.evaluate --method checkpoint --checkpoint ... --real   # held-out webcam captures
+    uv run python -m cardid.evaluate --method checkpoint --checkpoint ... --real --detector data/runs/det/best.pt   # re-locating the card first
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ import torch
 
 from .data import cached_eval_queries, gallery_images, load_arts, to_tensor
 from .degrade import PROFILES
+from .detector import Detector
 from .hashing import hamming_topk, hash_images
 from .model import Embedder, PretrainedBaseline, describe_device, pick_device
-from .real import load_labels, real_eval_queries
+from .real import load_labels, real_detector_queries, real_eval_queries
 
 WIDTH_BUCKETS = [(56, 80), (80, 110), (110, 141), (141, 10_000)]  # art width in px; 56-79 only occurs in "harsh", 141+ only in real captures
 
@@ -95,6 +97,10 @@ def main() -> None:
     parser.add_argument("--per-art", type=int, default=3)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="harsh")
     parser.add_argument("--real", action="store_true", help="query with the eval split of labeled real captures instead of synthetic degradation")
+    parser.add_argument(
+        "--detector",
+        help="with --real: re-locate the card in each stored crop with this CornerNet checkpoint (or 'classical' for the edge finder) instead of using the stored quad",
+    )
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     args = parser.parse_args()
     torch.set_num_threads(os.cpu_count() or 8)
@@ -103,7 +109,13 @@ def main() -> None:
     arts = load_arts()
     t0 = time.time()
     gallery = gallery_images(arts)
-    if args.real:
+    per_query = 1
+    if args.real and args.detector:
+        profile = f"real+{'classical' if args.detector == 'classical' else 'detector'}"
+        locate = classical_locate if args.detector == "classical" else Detector(args.detector).locate
+        queries, targets, infos = real_detector_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)}, locate)
+        per_query = 2  # both orientations; the more confident one is kept below
+    elif args.real:
         profile = "real"
         queries, targets, infos = real_eval_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)})
     else:
@@ -130,7 +142,22 @@ def main() -> None:
         q = embed_images(model, queries)
         print(f"embedded in {time.time() - t0:.1f}s on {describe_device(device)}")
         idx, sims = cosine_topk(q, g, 5)
+        if per_query > 1:
+            # capture.py keeps the orientation whose best match is most similar
+            idx, sims = idx.reshape(-1, per_query, 5), sims.reshape(-1, per_query, 5)
+            pick = sims[:, :, 0].argmax(axis=1)
+            idx, sims = idx[np.arange(len(idx)), pick], sims[np.arange(len(sims)), pick]
         report(idx, sims, targets, infos, label)
+
+
+def classical_locate(crop: np.ndarray, click: tuple[float, float]) -> np.ndarray:
+    """The edge finder as a `locate` function; when it finds nothing, a centred upright card
+    of a typical size so the capture still yields a (wrong) guess rather than crashing."""
+    from .detect import find_card_quad
+    from .detector import card_rect
+
+    quad = find_card_quad(crop, click)
+    return quad if quad is not None else card_rect(click[0], click[1], 200.0, 0.0)
 
 
 if __name__ == "__main__":
