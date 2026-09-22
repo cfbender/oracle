@@ -16,6 +16,7 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from . import RUNS_DIR
 from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split
@@ -81,7 +82,8 @@ def main() -> None:
         dataset.set_epoch(epoch)
         model.train()
         t0, losses = time.time(), []
-        for clean, degraded, labels in loader:
+        bar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
+        for clean, degraded, labels in bar:
             a = model(clean)
             b = model(degraded)
             loss = info_nce(a, b, args.temperature)
@@ -92,6 +94,8 @@ def main() -> None:
             opt.step()
             sched.step()
             losses.append(loss.item())
+            bar.set_postfix(loss=f"{np.mean(losses[-20:]):.3f}")
+        bar.close()
         top1 = quick_eval(model, gallery, queries, targets)
         history.append({"epoch": epoch, "loss": float(np.mean(losses)), "top1": top1, "seconds": time.time() - t0})
         print(json.dumps(history[-1]))

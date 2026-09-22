@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 from . import ART_DIR, DATA_DIR
 from .degrade import PROFILES, Degradation, clean_view, degraded_view, load_rgb
@@ -66,7 +69,10 @@ def gallery_images(arts: list[dict]) -> np.ndarray:
     cache = DATA_DIR / f"gallery-{len(arts)}.npy"
     if cache.exists():
         return np.load(cache, mmap_mode="r")
-    images = np.stack([clean_view(load_rgb(art_path(a))) for a in arts])
+    # cv2 releases the GIL, so threads give a near-linear speedup on the JPEG decode.
+    with ThreadPoolExecutor(os.cpu_count() or 8) as pool:
+        views = list(tqdm(pool.map(lambda a: clean_view(load_rgb(art_path(a))), arts), total=len(arts), desc="gallery views"))
+    images = np.stack(views)
     np.save(cache, images)
     return images
 
@@ -78,7 +84,7 @@ def build_eval_queries(arts: list[dict], gallery_index: dict[str, int], per_art:
     """
     rng = np.random.default_rng(seed)
     images, targets, infos = [], [], []
-    for a in arts:
+    for a in tqdm(arts, desc="eval queries"):
         img = load_rgb(art_path(a))
         for _ in range(per_art):
             q, info = degraded_view(img, rng, cfg)
