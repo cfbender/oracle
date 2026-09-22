@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from . import RUNS_DIR
-from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split
+from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
 from .evaluate import cosine_topk, embed_images
 from .model import ArcFaceHead, Embedder, info_nce
 
@@ -40,8 +40,11 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--backbone-lr", type=float, default=3e-4)
     parser.add_argument("--temperature", type=float, default=0.05)
-    parser.add_argument("--workers", type=int, default=max(2, (os.cpu_count() or 8) - 2), help="augmentation worker processes")
-    parser.add_argument("--threads", type=int, default=os.cpu_count() or 8, help="torch intra-op threads")
+    # Augmentation and the model's forward/backward run concurrently, so split the cores
+    # between them rather than giving both the full count.
+    cores = os.cpu_count() or 8
+    parser.add_argument("--workers", type=int, default=max(2, cores // 2), help="augmentation worker processes")
+    parser.add_argument("--threads", type=int, default=max(2, cores - cores // 2), help="torch intra-op threads")
     parser.add_argument("--arcface", type=float, default=0.0, help="weight of the ArcFace class loss (0 disables)")
     parser.add_argument("--resume")
     args = parser.parse_args()
@@ -53,7 +56,15 @@ def main() -> None:
     arts = load_arts()
     train_arts = split(arts, "train")
     dataset = PairDataset(train_arts)
-    loader = DataLoader(dataset, batch_size=args.batch, shuffle=True, num_workers=args.workers, drop_last=True, persistent_workers=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch,
+        shuffle=True,
+        num_workers=args.workers,
+        worker_init_fn=worker_init,
+        drop_last=True,
+        persistent_workers=True,
+    )
 
     gallery = gallery_images(arts)
     queries, targets, _ = cached_eval_queries(arts)

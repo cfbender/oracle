@@ -39,6 +39,15 @@ def to_tensor(rgb_uint8: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(np.moveaxis(x, -1, -3)))
 
 
+def worker_init(_worker_id: int) -> None:
+    """DataLoader workers do augmentation only; keep each one single-threaded so N workers
+    plus the main process's torch threads do not oversubscribe the cores."""
+    import cv2
+
+    cv2.setNumThreads(1)
+    torch.set_num_threads(1)
+
+
 class PairDataset(Dataset):
     """One (clean, degraded) pair per art, with a fresh random degradation every access."""
 
