@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import Dataset
 
 from . import ART_DIR, CARD_DIR
-from .data import to_tensor
+from .data import IMAGENET_MEAN, IMAGENET_STD, to_tensor
 from .degrade import load_rgb
 
 SCENE = 640  # native px around the click (capture.html CROP)
@@ -324,14 +324,26 @@ def render_scene(rng: np.random.Generator, cards: list[Path], arts: list[Path], 
 
 
 def scene_to_input(scene: np.ndarray) -> torch.Tensor:
+    """One HWC uint8 scene -> normalised CHW float tensor (inference path)."""
     if scene.shape[0] != DET_INPUT:
         scene = cv2.resize(scene, (DET_INPUT, DET_INPUT), interpolation=cv2.INTER_AREA)
     return to_tensor(scene)
 
 
+def batch_to_input(scenes: torch.Tensor) -> torch.Tensor:
+    """NHWC uint8 batch (any device) -> normalised NCHW float batch on the same device. The
+    datasets ship uint8 so each sample crosses the worker queue, collation and pinned memory
+    at a quarter of the float size; the arithmetic is cheaper on the GPU than the transfer."""
+    mean = torch.as_tensor(IMAGENET_MEAN, dtype=torch.float32, device=scenes.device).view(1, 3, 1, 1)
+    std = torch.as_tensor(IMAGENET_STD, dtype=torch.float32, device=scenes.device).view(1, 3, 1, 1)
+    x = scenes.permute(0, 3, 1, 2).float().div_(255.0)
+    return (x - mean) / std
+
+
 class SceneDataset(Dataset):
-    """`length` fresh scenes per epoch; deterministic in (seed, epoch, index). With `raw`,
-    yields (uint8 scene, quad in px) instead of the normalised model input/target."""
+    """`length` fresh scenes per epoch; deterministic in (seed, epoch, index). Yields the HWC
+    uint8 scene (normalise batches with `batch_to_input`) and the quad in [0, 1] window units,
+    or in pixels with `raw`."""
 
     def __init__(self, length: int, cards: list[Path] | None = None, arts: list[Path] | None = None, seed: int = 0, raw: bool = False):
         self.length = length
@@ -350,9 +362,7 @@ class SceneDataset(Dataset):
     def __getitem__(self, i: int):
         rng = np.random.default_rng([self.seed, self.epoch, i])
         scene, quad = render_scene(rng, self.cards, self.arts)
-        if self.raw:
-            return torch.from_numpy(scene), torch.from_numpy(quad)
-        return scene_to_input(scene), torch.from_numpy(quad / DET_INPUT)
+        return torch.from_numpy(scene), torch.from_numpy(quad if self.raw else quad / DET_INPUT)
 
 
 def window_around(img: np.ndarray, cx: float, cy: float, side: float, out: int = SCENE) -> tuple[np.ndarray, np.ndarray]:
@@ -422,7 +432,7 @@ class RealSceneDataset(Dataset):
     def __getitem__(self, i: int):
         rng = np.random.default_rng([self.seed, self.epoch, i]) if self.augment else None
         scene, quad = self.sample(i, rng)
-        return scene_to_input(scene), torch.from_numpy(quad / DET_INPUT)
+        return torch.from_numpy(np.ascontiguousarray(scene)), torch.from_numpy(quad / DET_INPUT)
 
 
 def sheet(n: int, seed: int, out: Path) -> None:

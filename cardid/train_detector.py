@@ -36,7 +36,7 @@ from .detector import (
 )
 from .model import describe_device, pick_device
 from .real import REAL_DIR, load_labels
-from .synth import DET_INPUT, RealSceneDataset, SceneDataset, quad_short, scene_to_input
+from .synth import DET_INPUT, RealSceneDataset, SceneDataset, batch_to_input, quad_short
 
 HIT = 0.05
 
@@ -69,7 +69,7 @@ def eval_scenes(model: CornerNet, scenes: np.ndarray, quads: np.ndarray, device:
     model.eval()
     preds = []
     for i in range(0, len(scenes), batch):
-        x = torch.stack([scene_to_input(s) for s in scenes[i : i + batch]]).to(device)
+        x = batch_to_input(torch.from_numpy(scenes[i : i + batch]).to(device))
         preds.append(model(x)[0].cpu().numpy() * DET_INPUT)
     return summarize(np.concatenate(preds), quads)
 
@@ -106,6 +106,7 @@ def main() -> None:
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)")
     parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
+    parser.add_argument("--no-pin", action="store_true", help="do not stage batches in pinned host memory (try if bench_loader shows the loader capped regardless of workers)")
     parser.add_argument("--resume")
     parser.add_argument("--real", action="store_true", help="mix in the train split of labeled real captures from data/real")
     parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")
@@ -147,7 +148,7 @@ def main() -> None:
         worker_init_fn=worker_init,
         drop_last=True,
         persistent_workers=True,
-        pin_memory=device.type == "cuda",
+        pin_memory=device.type == "cuda" and not args.no_pin,
     )
     scenes, quads = val_scenes(args.val, args.workers)
 
@@ -185,7 +186,7 @@ def main() -> None:
         bar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
         for x, target in bar:
             target_pose = quad_to_pose(target).to(device, non_blocking=True)  # fitted on the CPU copy, before the transfer
-            x, target = x.to(device, non_blocking=True), target.to(device, non_blocking=True)
+            x, target = batch_to_input(x.to(device, non_blocking=True)), target.to(device, non_blocking=True)
             pred, residual, pose = model(x)
             loss = corner_loss(pred, target, residual, args.residual_weight) + args.pose_weight * pose_loss(pose, target_pose)
             opt.zero_grad(set_to_none=True)

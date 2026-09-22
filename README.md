@@ -171,7 +171,11 @@ separately, which is the first thing to run when epochs take longer than that ar
 The default is one worker per logical CPU minus one; on an SMT desktop (8 cores / 16 threads)
 that oversubscribes the physical cores and 8 workers deliver ~50% more samples/s than 15, so
 sweep `--workers 6 8 10 12` in the bench and pass the winner to `train_detector`. Guest VMs
-report SMT topology too but often scale like full cores, so the trainer does not guess.
+report SMT topology too but often scale like full cores, so the trainer does not guess. If the
+samples/s barely move with the worker count, the main process is the cap: batches are staged
+in pinned host memory on GPU runs, which is slow to allocate on some ROCm setups, so compare
+with `--no-pin` (both tools take it). The datasets ship uint8 scenes and normalise on the
+device, so each sample is 196 KB through the queue rather than 786 KB.
 
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 

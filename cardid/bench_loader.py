@@ -150,6 +150,7 @@ def main() -> None:
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--skip-eval", action="store_true")
     parser.add_argument("--detector", action="store_true", help="time cardid.train_detector's scene renderer and CornerNet instead")
+    parser.add_argument("--no-pin", action="store_true", help="skip pinned host memory staging, as train_detector --no-pin does")
     args = parser.parse_args()
     cv2.setNumThreads(0)
     device = pick_device(args.device)
@@ -159,7 +160,7 @@ def main() -> None:
         if not args.skip_loader:
             single_ms = bench_scene_render(40)
             for workers in args.workers:
-                bench_loader(SceneDataset(10**6, seed=7), workers, args.batch, args.batches, pin=device.type == "cuda", single_ms=single_ms)
+                bench_loader(SceneDataset(10**6, seed=7), workers, args.batch, args.batches, pin=device.type == "cuda" and not args.no_pin, single_ms=single_ms)
         if not args.skip_model:
             bench_detector_model(device, args.batch, 20)
         return
