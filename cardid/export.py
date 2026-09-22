@@ -34,9 +34,10 @@ import numpy as np
 import torch
 
 from . import DATA_DIR
+from .bundle import REFINE_FILL, REFINE_MIN_SIDE
 from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_PENALTY, art_crops, frame_penalties, warp_card
-from .detector import CornerNet, Detector, load_checkpoint
+from .detector import CARD_ASPECT, CornerNet, Detector, load_checkpoint
 from .graphs import ROTATIONS, DetectorGraph, EmbedGraph, SearchGraph
 from .index import ArtIndex
 from .synth import DET_INPUT, SCENE
@@ -126,9 +127,9 @@ def export_bundle(checkpoint: Path, detector: Path, out: Path, frame_penalty: fl
             "scene": SCENE,
             "det_input": DET_INPUT,
             "rotations": ROTATIONS,
-            "refine_fill": 0.6,
-            "refine_min_side": 64,
-            "card_aspect": CARD_H / CARD_W,
+            "refine_fill": REFINE_FILL,
+            "refine_min_side": REFINE_MIN_SIDE,
+            "card_aspect": CARD_ASPECT,  # the refine window is short * card_aspect / refine_fill
             "card_size": [CARD_W, CARD_H],
             "input_size": INPUT_SIZE,
             "frame_names": FRAME_NAMES,
