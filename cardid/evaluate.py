@@ -21,8 +21,9 @@ import time
 import numpy as np
 import torch
 
-from .data import cached_eval_queries, gallery_images, load_arts, to_tensor
+from .data import art_frames, cached_eval_queries, gallery_images, load_arts, to_tensor
 from .degrade import PROFILES
+from .detect import FRAME_NAMES
 from .detector import Detector
 from .hashing import hamming_topk, hash_images
 from .model import Embedder, PretrainedBaseline, describe_device, pick_device
@@ -42,12 +43,24 @@ def embed_images(model: torch.nn.Module, images: np.ndarray, batch: int = 256) -
     return np.concatenate(out)
 
 
+def topk(sims: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """(indices, similarities) of the k best gallery entries along the last axis, best first."""
+    idx = np.argpartition(-sims, k, axis=-1)[..., :k]
+    top = np.take_along_axis(sims, idx, axis=-1)
+    order = np.argsort(-top, axis=-1)
+    return np.take_along_axis(idx, order, axis=-1), np.take_along_axis(top, order, axis=-1)
+
+
 def cosine_topk(q: np.ndarray, g: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
-    sims = q @ g.T
-    idx = np.argpartition(-sims, k, axis=1)[:, :k]
-    top = np.take_along_axis(sims, idx, axis=1)
-    order = np.argsort(-top, axis=1)
-    return np.take_along_axis(idx, order, axis=1), np.take_along_axis(top, order, axis=1)
+    return topk(q @ g.T, k)
+
+
+def frame_topk(q: np.ndarray, g: np.ndarray, frames: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """`cosine_topk` for per-frame query embeddings (... x F x D, `detect.FRAME_NAMES` order):
+    each gallery art is scored against the cut for its own frame (`frames`, G ints)."""
+    sims = np.einsum("...fd,gd->...fg", q, g)
+    sims = np.take_along_axis(sims, np.broadcast_to(frames, sims.shape[:-2] + (1, len(frames))), axis=-2)[..., 0, :]
+    return topk(sims, k)
 
 
 def report(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[dict], label: str) -> dict:
@@ -89,10 +102,11 @@ def report(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[d
     return result
 
 
-def print_misses(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[dict], arts: list[dict]) -> None:
+def print_misses(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: list[dict], arts: list[dict], frames: np.ndarray | None = None) -> None:
     """One line per wrong real capture: what it was, what came back, how confident, and (with
     a detector) how far its quad sat from the labeled one. A miss with a quad within a few
-    percent is the recogniser's; one with a quad way off is the detector's."""
+    percent is the recogniser's; one with a quad way off is the detector's. Non-modern art
+    frames of the truth are named, since those are cut differently (`detect.FRAMES`)."""
     misses = np.where(idx[:, 0] != targets)[0]
     if not len(misses):
         return
@@ -106,6 +120,8 @@ def print_misses(idx: np.ndarray, sims: np.ndarray, targets: np.ndarray, infos: 
         )
         if "quad_err" in infos[i]:
             line += f", detector quad {infos[i]['quad_err'] * 100:.1f}% of short side off the label"
+        if frames is not None and FRAME_NAMES[frames[targets[i]]] != "modern":
+            line += f", truth has {FRAME_NAMES[frames[targets[i]]]} art"
         if "other_orientation" in infos[i]:
             art, sim, top = infos[i]["other_orientation"]
             rank = np.where(top == targets[i])[0]
@@ -133,6 +149,7 @@ def main() -> None:
     arts = load_arts()
     t0 = time.time()
     gallery = gallery_images(arts)
+    frames = art_frames(arts)
     per_query = 1
     learned_up = False
     if args.real and args.detector:
@@ -150,6 +167,8 @@ def main() -> None:
     print(f"[{profile}] gallery {len(gallery)} arts, {len(queries)} queries ({time.time() - t0:.0f}s to load)")
 
     if args.method in ("dhash", "phash"):
+        if queries.ndim > 4:
+            queries = queries[..., 0, :, :, :].reshape(-1, *queries.shape[-3:])  # hashes only get the modern cut
         g = hash_images(gallery, args.method, args.hash_size)
         q = hash_images(queries, args.method, args.hash_size)
         idx, sims = hamming_topk(q, g, 5)
@@ -167,9 +186,13 @@ def main() -> None:
         model.to(device)
         t0 = time.time()
         g = embed_images(model, gallery)
-        q = embed_images(model, queries)
+        q = embed_images(model, queries.reshape(-1, *queries.shape[-3:]))
         print(f"embedded in {time.time() - t0:.1f}s on {describe_device(device)}")
-        idx, sims = cosine_topk(q, g, 5)
+        if queries.ndim > 4:
+            # real captures carry every frame's cut: score each art against the cut for its frame
+            idx, sims = frame_topk(q.reshape(*queries.shape[:-3], q.shape[-1]), g, frames, 5)
+        else:
+            idx, sims = cosine_topk(q, g, 5)
         if per_query > 1:
             idx, sims = idx.reshape(-1, per_query, 5), sims.reshape(-1, per_query, 5)
             rows = np.arange(len(idx))
@@ -194,7 +217,7 @@ def main() -> None:
             idx, sims = idx[rows, pick], sims[rows, pick]
         report(idx, sims, targets, infos, label)
         if args.real:
-            print_misses(idx, sims, targets, infos, arts)
+            print_misses(idx, sims, targets, infos, arts, frames)
 
 
 def classical_locate(crop: np.ndarray, click: tuple[float, float]) -> np.ndarray:

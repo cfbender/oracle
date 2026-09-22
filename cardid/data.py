@@ -9,11 +9,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from . import ART_DIR, DATA_DIR
 from .degrade import PROFILES, Degradation, clean_view, degraded_view, load_rgb
+from .detect import FRAME_NAMES, frame_of
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
@@ -30,6 +32,23 @@ def split(arts: list[dict], name: str) -> list[dict]:
 
 def art_path(art: dict) -> Path:
     return ART_DIR / f"{art['id']}.jpg"
+
+
+def art_frames(arts: list[dict]) -> np.ndarray:
+    """Index into `detect.FRAME_NAMES` per art, from the art image's aspect (a header read,
+    ~1.5 s for 49k files) and its Scryfall layout. Warns once when half-width arts have no
+    layout recorded (older arts.json): `python -m cardid.scryfall --layouts` backfills it."""
+    frames, unknown_half = [], 0
+    for a in arts:
+        with Image.open(art_path(a)) as im:
+            w, h = im.size
+        aspect = w / h
+        if aspect < 0.6 and "layout" not in a:
+            unknown_half += 1
+        frames.append(FRAME_NAMES.index(frame_of(aspect, a.get("layout"))))
+    if unknown_half:
+        print(f"{unknown_half} half-width arts without a layout in arts.json, treated as sagas; run `python -m cardid.scryfall --layouts` to tell class/case cards apart")
+    return np.array(frames, dtype=np.int64)
 
 
 def to_tensor(rgb_uint8: np.ndarray) -> torch.Tensor:

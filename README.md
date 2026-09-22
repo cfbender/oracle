@@ -7,6 +7,17 @@ The recognizer is a metric-learning CNN: a MobileNetV3-Small backbone maps the a
 card to a 128-d unit vector, and identification is cosine nearest-neighbor against one vector
 per Scryfall unique artwork (~49k). Adding a set means embedding its art, not retraining.
 
+Scryfall's `art_crop` is a fixed template per card frame, so the query side cuts the same
+templates out of the warped card: modern (0.08–0.92 wide from 0.115 down), old 1993/1997
+frame, extended art, the tall art of full-art basics and most tokens, and the half-width art
+of sagas (right half) and class/case cards (left half). `detect.FRAMES` holds the boxes,
+measured by template-matching art crops back into card scans; each gallery art's frame is
+read off its image aspect (plus the Scryfall layout for the half-width ones), every click
+embeds all six cuts in one batch, and each art is scored against the cut for its frame
+(`index.frame_similarities`). On clean card scans through the orb model this took sagas from
+0.25 to 1.00 top-1, class cards from 0 to 1.00 and full-art lands from 0.92 to 1.00 with
+modern cards unchanged; the extra cuts cost ~50 ms on the orb CPU.
+
 ## Setup
 
 ```sh
@@ -27,6 +38,7 @@ is a harder retrieval problem. On a machine with the cores/RAM for it:
 
 ```sh
 uv run python -m cardid.scryfall --all              # +43k art crops as train, ~80 min at 10 req/s
+uv run python -m cardid.scryfall --layouts          # backfill `layout` into an arts.json from before it was recorded (no downloads)
 uv run python -m cardid.train --epochs 16 --batch 256 --run full   # workers/threads default to the core count
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --profile realistic
 ```
@@ -103,9 +115,10 @@ and evaluation data.
 uv run python -m cardid.capture --checkpoint data/runs/full/best.pt     # then open http://localhost:8765
 ```
 
-Keys: `1`–`5` confirm a candidate, `/` search by name, `S` skip, `F` flip to the other
+Keys: `1`–`5` confirm a candidate, `/` search by name (add a set code to narrow a basic or
+staple with hundreds of printings: `forest fin`), `S` skip, `F` flip to the other
 orientation's candidates (with `--detector`), shift-drag a box around the card when the
-automatic quad is missing or wrong. The header shows running top-1/top-5 over
+automatic quad is missing or wrong. Candidates from a non-modern frame say so ("right art"). The header shows running top-1/top-5 over
 what you have labeled and the server/round-trip milliseconds per click. Captures are split
 80/20 into train/eval by a hash of their id, so relabeling never moves a sample.
 
@@ -113,7 +126,7 @@ Without `--detector`, quad detection is classical (Canny + contour quads contain
 click; the outermost of the nested card-shaped quads is the card edge, the smallest is the
 inner frame line). It fails on busy playmats, sleeves and borderless cards; see the detector
 section below. The stored `card.png` is the 250×350 warp, so the art box can be re-cut with
-jitter at train time and `ART_BOX` can change without recapturing. Each label also stores the
+jitter at train time and the frame boxes can change without recapturing. Each label also stores the
 crop and the quad used, which is what the detector trains and evaluates on.
 
 ```sh

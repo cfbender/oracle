@@ -79,6 +79,7 @@ def usable_entries(bulk: Path) -> list[dict]:
                         "oracle_id": card.get("oracle_id"),
                         "name": card["name"],
                         "set": card["set"],
+                        "layout": card["layout"],
                         "url": card["image_uris"]["art_crop"],
                     }
                 )
@@ -94,6 +95,19 @@ def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> li
     for i, e in enumerate(picked):
         e["split"] = "train" if i < n_train else "eval"
     return picked
+
+
+def add_layouts(arts: list[dict], entries: list[dict]) -> int:
+    """Backfill `layout` into an arts.json written before it was recorded; returns how many
+    entries changed. The recogniser needs it to tell a saga's right-half art from a class or
+    case card's left-half art (`detect.frame_of`)."""
+    layouts = {e["id"]: e["layout"] for e in entries}
+    changed = 0
+    for a in arts:
+        if "layout" not in a and a["id"] in layouts:
+            a["layout"] = layouts[a["id"]]
+            changed += 1
+    return changed
 
 
 def extend_to_all(existing: list[dict], entries: list[dict]) -> list[dict]:
@@ -151,6 +165,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~49k images, ~3 GB)")
     parser.add_argument("--cards", type=int, help="only download full-card images of this many random train arts into data/cards (~100 KB each)")
+    parser.add_argument("--layouts", action="store_true", help="only backfill the Scryfall layout into an existing data/arts.json (no image downloads)")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -166,12 +181,20 @@ def main() -> None:
         bulk = download_bulk(client, DATA_DIR / "unique-artwork.jsonl.gz")
         arts_path = DATA_DIR / "arts.json"
         arts = json.loads(arts_path.read_text()) if arts_path.exists() else None
+        if args.layouts:
+            if arts is None:
+                raise SystemExit("run the art_crop download first so data/arts.json exists")
+            changed = add_layouts(arts, usable_entries(bulk))
+            arts_path.write_text(json.dumps(arts))
+            print(f"layout added to {changed} of {len(arts)} arts")
+            return
         if arts is None or args.all:
             entries = usable_entries(bulk)
             if arts is None:
                 arts = sample_arts(entries, args.train, args.eval, args.seed)
             if args.all:
                 arts = extend_to_all(arts, entries)
+            add_layouts(arts, entries)
             arts_path.write_text(json.dumps(arts))
 
         failed = []

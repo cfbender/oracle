@@ -37,7 +37,7 @@ import numpy as np
 import torch
 
 from . import ART_DIR
-from .detect import art_crop, card_orientations, find_card_quad, warp_card
+from .detect import art_crops, card_orientations, find_card_quad, warp_card
 from .detector import Detector, cyclic_order
 from .index import ArtIndex
 from .real import load_labels, save_label
@@ -70,8 +70,9 @@ class Session:
             return {"quad": None, "ms": round((time.perf_counter() - t0) * 1000, 1)}
         card = warp_card(crop, quad)
         cards = card_orientations(card)
-        arts = np.stack([art_crop(c) for c in cards])
-        vecs = self.index.embed(arts)
+        # every frame's art box from both orientations, embedded in one batch: 2 x F x D
+        arts = np.stack([art_crops(c) for c in cards])
+        vecs = self.index.embed(arts.reshape(-1, *arts.shape[2:])).reshape(len(cards), arts.shape[1], -1)
         results = [self.index.search(v, 5) for v in vecs]
         if source == "detector":
             # The learned detector orders the quad from the printed top-left, so index 0 is
@@ -115,7 +116,8 @@ class Session:
         # Pick the orientation whose embedding is closest to the labeled art, so a wrong
         # top-1 on an upside-down card still stores the card the right way up.
         target = self.index.embeddings[self.index.by_id[label]]
-        best = int(np.argmax(p["vecs"] @ target))
+        frame = self.index.frames[self.index.by_id[label]]
+        best = int(np.argmax(p["vecs"][:, frame] @ target))
         quad = p["quad"]
         short = min(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[3] - quad[0]))
         row = {
@@ -154,16 +156,29 @@ class Session:
         }
 
     def search(self, q: str) -> list[dict]:
-        q = q.strip().lower()
-        if not q:
+        """Name search for labelling. Every word must appear in the name, except that a word
+        equal to a set code filters by set instead ("forest fin" -> the Final Fantasy Forests),
+        since basics and staples have hundreds of printings."""
+        words = q.strip().lower().split()
+        if not words:
             return []
-        hits = [a for a in self.index.arts if q in a["name"].lower()]
-        hits.sort(key=lambda a: (not a["name"].lower().startswith(q), a["name"], a["set"]))
-        return [{"id": a["id"], "name": a["name"], "set": a["set"]} for a in hits[:30]]
+        sets = {a["set"] for a in self.index.arts}
+        set_words = [w for w in words if w in sets]
+        name_words = [w for w in words if w not in sets]
+        # a word that is both a set code and part of the name ("war", "fin") keeps the name meaning too
+        hits = [
+            a
+            for a in self.index.arts
+            if (not set_words or a["set"] in set_words or all(w in a["name"].lower() for w in words))
+            and all(w in a["name"].lower() for w in name_words)
+        ]
+        prefix = " ".join(name_words)
+        hits.sort(key=lambda a: (not a["name"].lower().startswith(prefix), a["set"] not in set_words, a["name"], a["set"]))
+        return [{"id": a["id"], "name": a["name"], "set": a["set"]} for a in hits[:60]]
 
 
 def candidates(hits: list[dict]) -> list[dict]:
-    return [{"id": a["id"], "name": a["name"], "set": a["set"], "similarity": round(a["similarity"], 3)} for a in hits]
+    return [{"id": a["id"], "name": a["name"], "set": a["set"], "similarity": round(a["similarity"], 3), "frame": a["frame"]} for a in hits]
 
 
 def png_b64(rgb: np.ndarray) -> str:

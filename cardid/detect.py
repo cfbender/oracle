@@ -16,9 +16,51 @@ from .degrade import INPUT_SIZE
 
 CARD_W, CARD_H = 250, 350  # canonical portrait card; 63x88mm is 1.397
 CARD_ASPECT = CARD_H / CARD_W
-# Art box of a modern frame as fractions of the card. Full-art and old-frame cards differ;
-# training's crop jitter (scale 0.9-1.12, shift +-6%) absorbs part of that.
-ART_BOX = (0.08, 0.10, 0.92, 0.52)  # x0, y0, x1, y1
+
+# Scryfall's art_crop is a fixed template per frame, not a per-card cut: template-matching
+# the art_crop back into the card image gives the same box (within 1% of the card) for every
+# card of a frame. Each frame here is (x0, y0, x1) as fractions of the card; the box's height
+# follows the art image's own aspect ratio (`frame_box`), which is also what tells the frames
+# apart (`frame_of`): ~1.37 modern, ~1.24 old (1993/1997), ~1.62 extended art, 0.6-1.1
+# full-art basics and most tokens (same x range as modern, art runs down to ~0.8), ~0.41 the
+# half-width art of sagas (right half) and class/case cards (left half). The query side
+# cuts every frame from the warped card (`art_crops`) and each gallery art is compared
+# against the cut for its own frame.
+FRAMES = {
+    "modern": (0.08, 0.115, 0.92),
+    "old": (0.121, 0.101, 0.881),
+    "extended": (0.0, 0.121, 1.0),
+    "tall": (0.08, 0.115, 0.92),
+    "right": (0.502, 0.112, 0.922),
+    "left": (0.074, 0.112, 0.494),
+}
+FRAME_NAMES = list(FRAMES)
+# representative art aspect (width / height) per frame, for the query-side cut
+FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415}
+HALF_LEFT_LAYOUTS = {"class", "case"}
+
+
+def frame_of(aspect: float, layout: str | None = None) -> str:
+    """Frame name for a gallery art from its image aspect (width / height) and, for the
+    half-width frames, the Scryfall layout (sagas put the art on the right, class and case
+    cards on the left; without a layout assume saga, they outnumber the others 5:1)."""
+    if aspect < 0.6:
+        return "left" if layout in HALF_LEFT_LAYOUTS else "right"
+    if aspect < 1.1:
+        return "tall"
+    if aspect < 1.3:
+        return "old"
+    if aspect < 1.44:
+        return "modern"
+    return "extended"
+
+
+def frame_box(frame: str, aspect: float | None = None) -> tuple[float, float, float, float]:
+    """(x0, y0, x1, y1) of a frame's art box as fractions of the card, its height from the
+    art's aspect (the frame's representative aspect when not given)."""
+    x0, y0, x1 = FRAMES[frame]
+    aspect = aspect or FRAME_ASPECT[frame]
+    return x0, y0, x1, y0 + (x1 - x0) * CARD_W / aspect / CARD_H
 
 
 def order_corners(pts: np.ndarray) -> np.ndarray:
@@ -93,10 +135,17 @@ def card_orientations(card: np.ndarray) -> list[np.ndarray]:
     return [card, cv2.rotate(card, cv2.ROTATE_180)]
 
 
-def art_crop(card: np.ndarray) -> np.ndarray:
-    x0, y0, x1, y1 = ART_BOX
+def art_crop(card: np.ndarray, frame: str = "modern") -> np.ndarray:
+    """The recogniser's input for one frame: that frame's art box cut from the canonical card
+    and squashed to the square input the same way the gallery art_crop is."""
+    x0, y0, x1, y1 = frame_box(frame)
     art = card[int(y0 * CARD_H) : int(y1 * CARD_H), int(x0 * CARD_W) : int(x1 * CARD_W)]
     return cv2.resize(art, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
+
+
+def art_crops(card: np.ndarray) -> np.ndarray:
+    """One recogniser input per frame, in FRAME_NAMES order (F x INPUT_SIZE x INPUT_SIZE x 3)."""
+    return np.stack([art_crop(card, f) for f in FRAME_NAMES])
 
 
 def rect_to_quad(x0: float, y0: float, x1: float, y1: float) -> np.ndarray:

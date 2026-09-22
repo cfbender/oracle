@@ -85,7 +85,7 @@ def main() -> None:
     real_sets = []
     if args.real:
         # Labels are only consumed by ArcFace, which --real excludes, so index over every art.
-        real_train = RealDataset(load_labels("train"), {a["id"]: i for i, a in enumerate(arts)}, repeat=args.real_repeat)
+        real_train = RealDataset(load_labels("train"), {a["id"]: i for i, a in enumerate(arts)}, repeat=args.real_repeat, layouts={a["id"]: a.get("layout") for a in arts})
         real_sets.append(real_train)
         print(f"real captures: {len(real_train.rows)} train x{args.real_repeat}, {len(load_labels('eval'))} eval")
         train_set = ConcatDataset([dataset, real_train])
