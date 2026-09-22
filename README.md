@@ -1,7 +1,8 @@
 # Card recognition spike (M0)
 
 Offline tooling for the webcam table's click-to-identify feature. Nothing here runs in the
-Phoenix app; it produces numbers (go/no-go) and, eventually, a model file the app loads.
+Phoenix app; it produces numbers (go/no-go) and a versioned runtime bundle (three ONNX graphs
+plus the gallery index, see [Shipping](#shipping-export-publish-refresh)) that the browser loads.
 
 The recognizer is a metric-learning CNN: a MobileNetV3-Small backbone maps the art box of a
 card to a 128-d unit vector, and identification is cosine nearest-neighbor against one vector
@@ -104,8 +105,9 @@ shows one card above the margin and top-3 below it; it never shows "no match".
 ```sh
 uv run python -m cardid.train --epochs 12 --batch 128 --run m0
 uv run python -m cardid.bench --checkpoint data/runs/m0/best.pt      # per-click CPU latency
-uv run python -m cardid.export --checkpoint data/runs/m0/best.pt     # ONNX for browser/server
 ```
+
+Exporting a checkpoint for the app is covered in [Shipping](#shipping-export-publish-refresh).
 
 ## Real webcam captures (label → train → evaluate loop)
 
@@ -286,6 +288,87 @@ budget; capture, upload and detection are.
 
 Open questions this run cannot answer: accuracy against the full 49k gallery (harder), and
 real webcam crops versus the synthetic degradation. Those are the next runs.
+
+## Shipping: export, publish, refresh
+
+The app never sees checkpoints. It loads a **bundle**: a versioned directory of three ONNX
+graphs plus the gallery index, built once on the training machine and copied to the server.
+
+```sh
+uv sync --extra rocm                                  # once: pulls onnxruntime for the parity check
+uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
+uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to nuc:/srv/the-gathering/cardid
+```
+
+`export` writes `data/bundles/<version>/` (default version `<today>-<checkpoint run name>`,
+override with `--version` or `--out`):
+
+| file | contents |
+|---|---|
+| `detector.onnx` | uint8 RGBA 256×256 window → card `quad` (4×2, window px, printed order), `up` (2), `centre` (2), `short` side. Runs the four 90° rotations, corner snapping, orientation vote and pose inside the graph. |
+| `embed.onnx` | uint8 RGBA scene (any H×W) + quad → 6×128 embeddings, one per frame cut (`detect.FRAMES`). The projective warp is a `GridSample`, so no OpenCV is needed in the browser. |
+| `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores. The gallery (f16 by default, `--gallery-dtype f32`) and the frame prior (`--frame-penalty`, default 0.02) are baked in; `--topk` defaults to 5. |
+| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `frame`. |
+| `manifest.json` | version, checkpoint sha256s, gallery size, every constant the glue code needs (scene 640, detector input 256, refine fill 0.6 / min side 64, card 250×350, art input 128, frame names, opset 17), per-file bytes + sha256. |
+| `SHA256SUMS` | what `publish` and the server verify. |
+
+Sizes at 49k arts: detector 12.6 MB, embed 5.1 MB, search ≈13 MB (f16), arts.json ≈7 MB.
+
+`export` ends with a parity check (`--verify N`, default 64, `0` to skip): it renders N
+synthetic scenes, runs the torch pipeline and the bundle through onnxruntime on each, and fails
+(exit 1, bundle left on disk for inspection) unless median corner error is under 1 px and the
+top-1 agrees on ≥97% of scenes where torch's top-1 leads the runner-up by more than 0.02.
+Disagreements inside that margin are float16/rounding noise, not export bugs.
+
+`cardid.bundle` is the onnxruntime reference runtime and the executable spec for the browser
+port: `uv run python -m cardid.bundle data/bundles/<version> --image frame.jpg --click 660,350`
+prints the top-5 and per-stage timings. The glue a JS runtime writes around the three graphs
+is in its module docstring (window resample → detector pass 1 → refine pass → embed → search).
+On the orb CPU one click costs ~43 ms detector (both passes), 23 ms embed, 5 ms search.
+
+`publish` verifies `SHA256SUMS`, tars the bundle and streams it over ssh (or copies to a local
+directory) into `<path>/.incoming`, re-verifies the sums on the server, moves the version into
+place and atomically repoints `<path>/current` at it, then prunes old versions beyond `--keep`
+(default 3). A failed transfer or a tampered file never touches `current`. The Phoenix side
+serves `DATA_DIR/cardid/current/*` and the browser caches by `manifest.json` version.
+
+### New sets
+
+New cards need gallery embeddings, not retraining (the recogniser learned "compare arts", not
+"these arts"). When a set releases:
+
+```sh
+uv run python -m cardid.scryfall --update        # fresh bulk file, new arts appended to data/arts.json, only new images downloaded
+uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
+uv run python -m cardid.publish data/bundles/<version> --to nuc:/srv/the-gathering/cardid
+```
+
+`--update` keeps the previous bulk file as `unique-artwork.jsonl.gz.previous` and leaves existing art IDs
+and gallery order alone, so the new bundle differs only by appended rows. Retrain (`train
+--real`) only when real-capture accuracy drifts, e.g. a new frame style the six cuts miss.
+
+### Training from in-app corrections (backlog)
+
+The plan for "the card was actually X" clicks in the webcam table: the app stores the same
+record `cardid.capture` does — `crop.jpg` (full-resolution crop around the click), `card.png`
+(the detector's 250×350 warp) and a `labels.jsonl` line with the chosen Scryfall art id — under
+`DATA_DIR/cardid/corrections/`. Syncing that directory into `data/real/` on the training box
+makes it a normal real-capture set: `train --real` fine-tunes and `evaluate --real --detector`
+selects by held-out top-1, then `export`/`publish` as above. Nothing in this package needs to
+change for that; the app side (recording the correction, an export endpoint or rsync) does not
+exist yet.
+
+### Where to train
+
+Training is the only heavy step and it is a batch job, so it does not need to live on the
+server. The NUC has no GPU; at ~49k arts the 16-core desktop takes ~206 s per epoch on CPU, and
+the NUC is a fraction of that machine, so expect 10–15 min per epoch (roughly an hour for a
+`--real` fine-tune) — fine as a nightly job, too slow to iterate on. Measure before deciding:
+`uv run python -m cardid.train --epochs 1 --run nuc-timing` prints seconds per epoch. The
+recommended split is train on the desktop (or the 3080 Ti box with PCIe passthrough rather than
+vGPU; that box needs a `cuda` torch extra in `pyproject.toml` alongside `cpu`/`rocm`, which
+does not exist yet — `--extra cpu` installs CPU-only wheels) and `publish` to the NUC, which
+only serves static files.
 
 ## Coral Edge TPU export (run on the host with the accelerator)
 

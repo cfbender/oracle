@@ -179,20 +179,27 @@ def main() -> None:
         action="store_true",
         help="only backfill Scryfall metadata (layout, collector_number) into an existing data/arts.json (no image downloads)",
     )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="fetch a fresh bulk file and add every usable artwork it has that data/arts.json lacks (new sets) as train, then download their art",
+    )
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ART_DIR.mkdir(parents=True, exist_ok=True)
+    arts_path = DATA_DIR / "arts.json"
     if args.cards:
-        arts_path = DATA_DIR / "arts.json"
         if not arts_path.exists():
             raise SystemExit("run the art_crop download first so data/arts.json exists")
         with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
             download_cards(client, json.loads(arts_path.read_text()), args.cards, args.seed)
         return
     with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
-        bulk = download_bulk(client, DATA_DIR / "unique-artwork.jsonl.gz")
-        arts_path = DATA_DIR / "arts.json"
+        bulk_path = DATA_DIR / "unique-artwork.jsonl.gz"
+        if args.update and bulk_path.exists():
+            bulk_path.replace(bulk_path.with_suffix(".gz.previous"))  # keep one for a diff or a rollback
+        bulk = download_bulk(client, bulk_path)
         arts = json.loads(arts_path.read_text()) if arts_path.exists() else None
         if args.metadata:
             if arts is None:
@@ -201,14 +208,19 @@ def main() -> None:
             arts_path.write_text(json.dumps(arts))
             print(f"metadata ({', '.join(METADATA_FIELDS)}) added to {changed} of {len(arts)} arts")
             return
-        if arts is None or args.all:
+        if arts is None or args.all or args.update:
             entries = usable_entries(bulk)
             if arts is None:
                 arts = sample_arts(entries, args.train, args.eval, args.seed)
-            if args.all:
+            if args.all or args.update:
                 arts = extend_to_all(arts, entries)
             add_metadata(arts, entries)
             arts_path.write_text(json.dumps(arts))
+        if args.update:
+            # only the new arts need fetching; `fetch_image` skips files that exist anyway, but
+            # this keeps a routine refresh from walking 49k files
+            arts = [a for a in arts if not (ART_DIR / f"{a['id']}.jpg").exists()]
+            print(f"{len(arts)} new arts to download; then re-export the bundle (`python -m cardid.export`) to add them to the gallery")
 
         failed = []
         with ThreadPoolExecutor(WORKERS) as pool:

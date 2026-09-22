@@ -8,6 +8,7 @@ dependencies = [
     "imagehash>=4.3",
     "numpy>=1.26",
     "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
     "opencv-python-headless>=4.9",
     "pillow>=10.3",
     "tqdm>=4.66",
