@@ -31,8 +31,12 @@ from .detector import (
     Detector,
     corner_error,
     corner_loss,
+    heat_loss,
+    heat_targets,
+    load_checkpoint,
     pose_loss,
     quad_to_pose,
+    snap_corners,
 )
 from .model import describe_device, pick_device
 from .real import REAL_DIR, load_labels
@@ -65,13 +69,23 @@ def summarize(pred: np.ndarray, target: np.ndarray) -> dict:
 
 
 @torch.no_grad()
-def eval_scenes(model: CornerNet, scenes: np.ndarray, quads: np.ndarray, device: torch.device, batch: int = 64) -> dict:
+def predict_scenes(model: CornerNet, scenes: np.ndarray, device: torch.device, batch: int = 64) -> tuple[np.ndarray, np.ndarray]:
+    """(snapped, raw pose) corner predictions in input px for a stack of 256px scenes."""
     model.eval()
-    preds = []
+    snapped, raw = [], []
     for i in range(0, len(scenes), batch):
         x = batch_to_input(torch.from_numpy(scenes[i : i + batch]).to(device))
-        preds.append(model(x)[0].cpu().numpy() * DET_INPUT)
-    return summarize(np.concatenate(preds), quads)
+        quad, _, _, heat = model(x)
+        quad = quad.cpu().numpy() * DET_INPUT
+        raw.append(quad)
+        snapped.append(snap_corners(quad, torch.sigmoid(heat)[:, 0].cpu().numpy()))
+    return np.concatenate(snapped), np.concatenate(raw)
+
+
+def eval_scenes(model: CornerNet, scenes: np.ndarray, quads: np.ndarray, device: torch.device, batch: int = 64) -> dict:
+    """{"synth": snapped error, "synth_pose": raw pose-head error} on the fixed validation set."""
+    snapped, raw = predict_scenes(model, scenes, device, batch)
+    return {"synth": summarize(snapped, quads), "synth_pose": summarize(raw, quads)}
 
 
 @torch.no_grad()
@@ -80,7 +94,7 @@ def eval_real(model: CornerNet, dataset: RealSceneDataset, device: torch.device)
     stored crops (what capture.py would do)."""
     model.eval()
     scenes, quads = zip(*(dataset.sample(i, None) for i in range(len(dataset))))
-    single = eval_scenes(model, np.stack(scenes), np.stack(quads), device)
+    single = summarize(predict_scenes(model, np.stack(scenes), device)[0], np.stack(quads))
     det = Detector(model=model, device=device)
     preds, targets = [], []
     for r in dataset.rows:
@@ -103,6 +117,7 @@ def main() -> None:
     parser.add_argument("--backbone-lr", type=float, default=3e-4)
     parser.add_argument("--residual-weight", type=float, default=0.5)
     parser.add_argument("--pose-weight", type=float, default=1.0, help="weight of the direct pose loss (centre, log size, angle vector) next to the corner loss")
+    parser.add_argument("--heat-weight", type=float, default=0.2, help="weight of the corner heatmap focal loss")
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)")
     parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
@@ -154,7 +169,7 @@ def main() -> None:
 
     model = CornerNet(pretrained=args.resume is None).to(device)
     if args.resume:
-        model.load_state_dict(torch.load(args.resume, map_location=device))
+        load_checkpoint(model, args.resume, device)
     opt = torch.optim.AdamW(
         [{"params": model.backbone_parameters(), "lr": args.backbone_lr}, {"params": model.head_parameters(), "lr": args.lr}],
         weight_decay=1e-4,
@@ -163,7 +178,7 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[args.backbone_lr, args.lr], total_steps=steps, pct_start=0.15)
 
     def evaluate() -> dict:
-        out = {"synth": eval_scenes(model, scenes, quads, device)}
+        out = eval_scenes(model, scenes, quads, device)
         if real_eval is not None:
             out.update(eval_real(model, real_eval, device))
         model.train()
@@ -187,8 +202,12 @@ def main() -> None:
         for x, target in bar:
             target_pose = quad_to_pose(target).to(device, non_blocking=True)  # fitted on the CPU copy, before the transfer
             x, target = batch_to_input(x.to(device, non_blocking=True)), target.to(device, non_blocking=True)
-            pred, residual, pose = model(x)
-            loss = corner_loss(pred, target, residual, args.residual_weight) + args.pose_weight * pose_loss(pose, target_pose)
+            pred, residual, pose, heat = model(x)
+            loss = (
+                corner_loss(pred, target, residual, args.residual_weight)
+                + args.pose_weight * pose_loss(pose, target_pose)
+                + args.heat_weight * heat_loss(heat, heat_targets(target))
+            )
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()

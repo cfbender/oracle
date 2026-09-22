@@ -9,6 +9,14 @@ square or a strip, and the residuals are penalised so they only carry real persp
 Rotation is predicted as (cos 2t, sin 2t): a rectangle's geometry repeats every 180 degrees
 and the corner loss is taken over cyclic orderings, so t in (-90, 90] covers every card.
 
+Regressing coordinates through a flattened fully connected head has a precision floor (about
+a tenth of the short side here, however long it trains), so the network also predicts a
+class-agnostic *corner heatmap* at stride 4. Each pose corner snaps to the nearest heatmap
+peak within a radius scaled by the card size, with a soft-argmax over the peak's 3x3
+neighbourhood for sub-pixel position; a corner with no peak nearby keeps the pose estimate.
+The pose gives the ordering, the 90-degree disambiguation and a guaranteed answer; the
+heatmap gives the precision.
+
 Inference is two-stage: the pose from the 640px click window, then the same network on a
 tight window around that estimate, where 1% of the input is a couple of native pixels.
 """
@@ -58,35 +66,48 @@ class CornerNet(nn.Module):
 
     FUSE = 64
     SQUEEZE = 32
+    DECODE = 32
 
     def __init__(self, pretrained: bool = True):
         super().__init__()
         weights = MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
         backbone = mobilenet_v3_small(weights=weights)
+        # the stem is split where the decoder takes laterals; state-dict keys stay `stem.<i>`
         self.stem = backbone.features[:9]  # (N, 48, 16, 16) at 256px input
         self.top = backbone.features[9:]  # (N, 576, 8, 8)
         self.lateral = nn.Conv2d(48, self.FUSE, 1)
         self.reduce = nn.Conv2d(576, self.FUSE, 1)
         self.squeeze = nn.Sequential(nn.Conv2d(self.FUSE, self.SQUEEZE, 3, padding=1), nn.Hardswish())
         self.head = nn.Sequential(nn.Linear(self.SQUEEZE * 16 * 16, 256), nn.Hardswish(), nn.Dropout(0.1), nn.Linear(256, 5 + 8))
+        # corner heatmap decoder: fused stride 16 -> 8 (lateral from features[3], 24 ch) -> 4
+        # (lateral from features[1], 16 ch) -> one logit per position
+        self.lat8 = nn.Conv2d(24, self.DECODE, 1)
+        self.lat4 = nn.Conv2d(16, self.DECODE, 1)
+        self.up16 = nn.Conv2d(self.FUSE, self.DECODE, 1)
+        self.dec8 = nn.Sequential(nn.Conv2d(self.DECODE, self.DECODE, 3, padding=1), nn.Hardswish())
+        self.dec4 = nn.Sequential(nn.Conv2d(self.DECODE, self.DECODE, 3, padding=1), nn.Hardswish(), nn.Conv2d(self.DECODE, 1, 1))
         # start as an upright card of short side 0.3 centred in the window
         with torch.no_grad():
             self.head[-1].weight.mul_(0.1)
             self.head[-1].bias.zero_()
             self.head[-1].bias[:5] = torch.tensor([0.5, 0.5, float(np.log(0.3)), 1.0, 0.0])
+            self.dec4[-1].bias.fill_(-2.19)  # sigmoid 0.1: corners are rare (focal-loss prior)
 
     def backbone_parameters(self):
         yield from self.stem.parameters()
         yield from self.top.parameters()
 
     def head_parameters(self):
-        for m in (self.lateral, self.reduce, self.squeeze, self.head):
+        for m in (self.lateral, self.reduce, self.squeeze, self.head, self.lat8, self.lat4, self.up16, self.dec8, self.dec4):
             yield from m.parameters()
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns (corners (N, 4, 2) in [0, 1] window units, residuals (N, 4, 2) in short-side
-        units, raw pose (N, 5) [cx, cy, log short, cos2t, sin2t])."""
-        mid = self.stem(x)
+        units, raw pose (N, 5) [cx, cy, log short, cos2t, sin2t], corner heatmap logits
+        (N, 1, 64, 64) at stride HEAT_STRIDE)."""
+        s4 = self.stem[:2](x)  # (N, 16, 64, 64)
+        s8 = self.stem[2:4](s4)  # (N, 24, 32, 32)
+        mid = self.stem[4:](s8)  # (N, 48, 16, 16)
         top = self.reduce(self.top(mid))
         fused = self.lateral(mid) + nn.functional.interpolate(top, size=mid.shape[-2:], mode="bilinear", align_corners=False)
         out = self.head(self.squeeze(fused).flatten(1))
@@ -94,7 +115,67 @@ class CornerNet(nn.Module):
         res = torch.tanh(res) * RESIDUAL
         quad = pose_to_quad(pose)
         short = pose[:, 2].exp()[:, None, None]
-        return quad + res * short, res, pose
+        d8 = self.dec8(self.lat8(s8) + nn.functional.interpolate(self.up16(fused), scale_factor=2, mode="bilinear", align_corners=False))
+        heat = self.dec4(self.lat4(s4) + nn.functional.interpolate(d8, scale_factor=2, mode="bilinear", align_corners=False))
+        return quad + res * short, res, pose, heat
+
+
+HEAT_STRIDE = 4
+HEAT_SIZE = DET_INPUT // HEAT_STRIDE
+
+
+def heat_targets(quads: torch.Tensor, size: int = HEAT_SIZE) -> torch.Tensor:
+    """(N, 4, 2) corners in [0, 1] window units -> (N, 1, size, size) Gaussian corner targets
+    (max over the four corners). The Gaussian's sigma scales with the card so a small card's
+    peak is still a point and a large card's is not needlessly sharp."""
+    n = quads.shape[0]
+    pts = quads * size  # heatmap px
+    short = torch.minimum((pts[:, 1] - pts[:, 0]).norm(dim=1), (pts[:, 3] - pts[:, 0]).norm(dim=1))  # (N,)
+    sigma = (0.05 * short).clamp(min=0.8)[:, None, None, None]
+    grid = torch.arange(size, device=quads.device, dtype=torch.float32) + 0.5
+    dy = grid[None, None, :, None] - pts[..., 1][:, :, None, None]  # (N, 4, size, 1)
+    dx = grid[None, None, None, :] - pts[..., 0][:, :, None, None]  # (N, 4, 1, size)
+    g = torch.exp(-(dx.pow(2) + dy.pow(2)) / (2 * sigma.pow(2)))  # (N, 4, size, size)
+    # the corner sits between cell centres, so scale each Gaussian to peak at exactly 1 in
+    # its nearest cell (the focal loss's positive) while keeping the sub-pixel shape around it
+    g = g / g.amax(dim=(2, 3), keepdim=True).clamp(min=1e-6)
+    return g.max(dim=1, keepdim=True).values.view(n, 1, size, size)
+
+
+def heat_loss(logits: torch.Tensor, target: torch.Tensor, alpha: float = 2.0, beta: float = 4.0) -> torch.Tensor:
+    """CenterNet's penalty-reduced pixelwise focal loss, normalised by the number of peaks."""
+    p = torch.sigmoid(logits).clamp(1e-4, 1 - 1e-4)
+    pos = (target > 0.999).float()
+    pos_loss = -(1 - p).pow(alpha) * torch.log(p) * pos
+    neg_loss = -(1 - target).pow(beta) * p.pow(alpha) * torch.log(1 - p) * (1 - pos)
+    return (pos_loss.sum() + neg_loss.sum()) / pos.sum().clamp(min=1)
+
+
+def snap_corners(quads: np.ndarray, heat: np.ndarray, threshold: float = 0.3) -> np.ndarray:
+    """Move each corner of `quads` ((N, 4, 2), input px) to the strongest heatmap peak within
+    ~12% of the card's short side, refined to sub-pixel by a soft-argmax over the peak's 3x3
+    neighbourhood; corners with no peak above `threshold` in reach are left alone. `heat` is
+    (N, HEAT_SIZE, HEAT_SIZE) of probabilities."""
+    out = quads.copy()
+    size = heat.shape[-1]
+    for n, quad in enumerate(quads):
+        short = min(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[3] - quad[0])) / HEAT_STRIDE
+        r = int(np.clip(round(0.12 * short), 1, 6))
+        h = heat[n]
+        for k, (x, y) in enumerate(quad / HEAT_STRIDE - 0.5):  # cell centres sit at i + 0.5
+            cx, cy = int(np.clip(round(x), 0, size - 1)), int(np.clip(round(y), 0, size - 1))
+            x0, x1, y0, y1 = max(cx - r, 0), min(cx + r + 1, size), max(cy - r, 0), min(cy + r + 1, size)
+            patch = h[y0:y1, x0:x1]
+            py, px = np.unravel_index(int(patch.argmax()), patch.shape)
+            if patch[py, px] < threshold:
+                continue
+            py, px = py + y0, px + x0
+            ny0, ny1, nx0, nx1 = max(py - 1, 0), min(py + 2, size), max(px - 1, 0), min(px + 2, size)
+            w = h[ny0:ny1, nx0:nx1]
+            ys, xs = np.mgrid[ny0:ny1, nx0:nx1]
+            sx, sy = float((w * xs).sum() / w.sum()), float((w * ys).sum() / w.sum())
+            out[n, k] = ((sx + 0.5) * HEAT_STRIDE, (sy + 0.5) * HEAT_STRIDE)
+    return out
 
 
 def corner_loss(pred: torch.Tensor, target: torch.Tensor, residual: torch.Tensor | None = None, residual_weight: float = 0.5) -> torch.Tensor:
@@ -169,6 +250,17 @@ def cyclic_order(quad: np.ndarray) -> np.ndarray:
     return np.roll(q, -int(np.argmin(q.sum(axis=1))), axis=0).astype(np.float32)
 
 
+def load_checkpoint(model: CornerNet, path: Path, device: torch.device) -> None:
+    """Load a state dict, tolerating checkpoints saved before the heatmap decoder existed
+    (their decoder layers keep their fresh initialisation, so warm-starting still works)."""
+    state = torch.load(path, map_location=device)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if unexpected:
+        raise RuntimeError(f"{path}: unexpected keys {sorted(unexpected)[:5]}")
+    if missing:
+        print(f"{path}: {len(missing)} keys not in checkpoint (pre-heatmap detector), left at init")
+
+
 class Detector:
     """Loads a CornerNet checkpoint and locates the card under a click in a full frame."""
 
@@ -177,7 +269,7 @@ class Detector:
         self.device = device or torch.device("cpu")
         if model is None:
             model = CornerNet(pretrained=False).to(self.device)
-            model.load_state_dict(torch.load(self.checkpoint, map_location=self.device))
+            load_checkpoint(model, self.checkpoint, self.device)
         self.model = model.eval()
 
     @torch.no_grad()
@@ -185,8 +277,9 @@ class Detector:
         """Corners (4x2, image px) of the card in the `side`-px square centred on (cx, cy)."""
         win, M = window_around(img, cx, cy, side, DET_INPUT)
         x = scene_to_input(win)[None].to(self.device)
-        quad, _, _ = self.model(x)
-        quad = quad[0].cpu().numpy() * DET_INPUT
+        quad, _, _, heat = self.model(x)
+        quad = quad.cpu().numpy() * DET_INPUT
+        quad = snap_corners(quad, torch.sigmoid(heat)[:, 0].cpu().numpy())[0]
         Minv = cv2_invert(M)
         return apply_affine(Minv, quad)
 

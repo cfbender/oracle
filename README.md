@@ -134,9 +134,21 @@ the four cyclic corner orderings (a rotated card has no privileged first corner)
 pose term: centre, log size and the (cos 2θ, sin 2θ) angle vector. The corner loss alone has a
 local minimum with the card turned 90° (each corner moves only ~0.2 short sides, less than at
 60°), and the first detector fell into it on about half of all cards; the angle-vector L2 is
-convex in the raw outputs and pulls straight out of it. Inference runs twice: once on the click window, then on a tight window around the
-first estimate for precision. It always returns a quad — a wrong one still gives the
-recogniser a guess to rank, which beats "nothing found".
+convex in the raw outputs and pulls straight out of it.
+
+Regressing coordinates through a flattened fully connected head has a precision floor: on
+synthetic scenes the pose-only detector plateaued around a tenth of the short side however
+long it trained. So the network also predicts a class-agnostic *corner heatmap* at stride 4
+(64×64) from a small FPN-style decoder over the stem's stride-8 and stride-4 features, trained
+with CenterNet's penalty-reduced focal loss (`--heat-weight`, default 0.2) against Gaussians
+at the four corners. At inference each pose corner snaps to the strongest heatmap peak within
+~12% of the short side, refined to sub-pixel by a soft-argmax over the peak's 3×3
+neighbourhood; a corner with no peak nearby keeps the pose estimate. The pose supplies the
+ordering, the 90° disambiguation and a guaranteed answer; the heatmap supplies the precision.
+Inference runs twice: once on the click window, then on a tight window around the first
+estimate. It always returns a quad — a wrong one still gives the recogniser a guess to rank,
+which beats "nothing found". `--resume` accepts checkpoints from before the heatmap head
+(the decoder starts fresh, everything else warm-starts).
 
 Training data is rendered by `cardid.synth` from full-card images composited onto busy
 backgrounds (random art crops as playmats, flat desks, gradients), with sleeves (a ring
@@ -155,8 +167,11 @@ uv run python -m cardid.capture --checkpoint data/runs/full/best.pt --detector d
 
 The trainer reports the median corner error as a fraction of the card's short side and the
 share of samples under 5% ("hit", inside the recogniser's crop-jitter tolerance) on a fixed
-synthetic validation set and on the held-out real captures (`real` = single pass on the click
-window, `real_e2e` = the two-stage `Detector.locate` capture uses). The number that matters
+synthetic validation set (`synth` = after heatmap snapping, `synth_pose` = the raw pose head,
+so the gap shows what the heatmap buys) and on the held-out real captures (`real` = single
+pass on the click window, `real_e2e` = the two-stage `Detector.locate` capture uses). With
+only a handful of labeled eval captures the `real*` numbers step in coarse increments and are
+mostly noise; grow `data/real` before trusting them. The number that matters
 is identification accuracy with detector quads instead of the stored ones:
 
 ```sh

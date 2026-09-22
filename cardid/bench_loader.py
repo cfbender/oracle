@@ -28,7 +28,14 @@ from .data import (
     worker_init,
 )
 from .degrade import INPUT_SIZE
-from .detector import CornerNet, corner_loss, pose_loss, quad_to_pose
+from .detector import (
+    CornerNet,
+    corner_loss,
+    heat_loss,
+    heat_targets,
+    pose_loss,
+    quad_to_pose,
+)
 from .evaluate import embed_images
 from .model import Embedder, describe_device, info_nce, pick_device
 from .synth import DET_INPUT, SceneDataset
@@ -93,8 +100,8 @@ def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
     target = torch.rand(batch, 4, 2, device=device)
 
     def step() -> None:
-        pred, res, pose = model(x)
-        loss = corner_loss(pred, target, res) + pose_loss(pose, quad_to_pose(target))
+        pred, res, pose, heat = model(x)
+        loss = corner_loss(pred, target, res) + pose_loss(pose, quad_to_pose(target)) + 0.2 * heat_loss(heat, heat_targets(target))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
