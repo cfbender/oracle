@@ -127,9 +127,14 @@ resolution loss) and picks `best.pt` by top-1 on the held-out eval-split capture
 window around the click (downscaled to 256) and predicts the card's *pose*: centre, short side
 and rotation, plus small bounded per-corner residuals for camera perspective. The corners are
 derived from a 63×88 rectangle at that pose, so the card's aspect ratio is built into the
-output rather than checked afterwards; the loss is the corner error under the best of the four
-cyclic corner orderings (a rotated card has no privileged first corner) plus a penalty on the
-residuals. Inference runs twice: once on the click window, then on a tight window around the
+output rather than checked afterwards. The head keeps the feature map's geometry (stride-16 and
+stride-32 maps fused at 16×16 and flattened) instead of average-pooling it, since pooling
+learns scale but not position or orientation. The loss is the corner error under the best of
+the four cyclic corner orderings (a rotated card has no privileged first corner) plus a direct
+pose term: centre, log size and the (cos 2θ, sin 2θ) angle vector. The corner loss alone has a
+local minimum with the card turned 90° (each corner moves only ~0.2 short sides, less than at
+60°), and the first detector fell into it on about half of all cards; the angle-vector L2 is
+convex in the raw outputs and pulls straight out of it. Inference runs twice: once on the click window, then on a tight window around the
 first estimate for precision. It always returns a quad — a wrong one still gives the
 recogniser a guess to rank, which beats "nothing found".
 
@@ -160,7 +165,9 @@ uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full
 ```
 
 Rendering is ~60 ms per scene on one core, so a 20k-sample epoch needs ~80 s of 15 workers
-and the GPU idles; on CPU the model step dominates instead.
+and the GPU idles; on CPU the model step dominates instead. `bench_loader --detector` times the
+renderer single-threaded, the DataLoader at each `--workers` count, and the CornerNet step
+separately, which is the first thing to run when epochs take longer than that arithmetic says.
 
 ## M0 results (2026-09-22, 6k-art gallery, 3,000 queries from 1,000 unseen arts)
 

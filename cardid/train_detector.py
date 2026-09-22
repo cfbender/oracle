@@ -26,7 +26,14 @@ from tqdm import tqdm
 
 from . import DATA_DIR, RUNS_DIR
 from .data import worker_init
-from .detector import CornerNet, Detector, corner_error, corner_loss
+from .detector import (
+    CornerNet,
+    Detector,
+    corner_error,
+    corner_loss,
+    pose_loss,
+    quad_to_pose,
+)
 from .model import describe_device, pick_device
 from .real import REAL_DIR, load_labels
 from .synth import DET_INPUT, RealSceneDataset, SceneDataset, quad_short, scene_to_input
@@ -95,6 +102,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--backbone-lr", type=float, default=3e-4)
     parser.add_argument("--residual-weight", type=float, default=0.5)
+    parser.add_argument("--pose-weight", type=float, default=1.0, help="weight of the direct pose loss (centre, log size, angle vector) next to the corner loss")
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     parser.add_argument("--workers", type=int, help="scene-rendering worker processes (default: half the cores on CPU, all but one on GPU)")
     parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
@@ -147,7 +155,7 @@ def main() -> None:
     if args.resume:
         model.load_state_dict(torch.load(args.resume, map_location=device))
     opt = torch.optim.AdamW(
-        [{"params": model.features.parameters(), "lr": args.backbone_lr}, {"params": model.head.parameters(), "lr": args.lr}],
+        [{"params": model.backbone_parameters(), "lr": args.backbone_lr}, {"params": model.head_parameters(), "lr": args.lr}],
         weight_decay=1e-4,
     )
     steps = args.epochs * len(loader)
@@ -176,9 +184,10 @@ def main() -> None:
         t0, losses, res_mag = time.time(), [], []
         bar = tqdm(loader, desc=f"epoch {epoch + 1}/{args.epochs}", unit="batch", leave=False)
         for x, target in bar:
+            target_pose = quad_to_pose(target).to(device, non_blocking=True)  # fitted on the CPU copy, before the transfer
             x, target = x.to(device, non_blocking=True), target.to(device, non_blocking=True)
-            pred, residual = model(x)
-            loss = corner_loss(pred, target, residual, args.residual_weight)
+            pred, residual, pose = model(x)
+            loss = corner_loss(pred, target, residual, args.residual_weight) + args.pose_weight * pose_loss(pose, target_pose)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()

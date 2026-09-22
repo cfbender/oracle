@@ -3,6 +3,7 @@ the augmentation DataLoader alone, the model's forward/backward on synthetic bat
 the post-epoch `quick_eval` (which is included in the epoch `seconds` train.py reports).
 
     uv run python -m cardid.bench_loader --workers 15 8 --batch 256
+    uv run python -m cardid.bench_loader --detector --workers 15 8 --batch 64   # cardid.train_detector's parts
 
 Must be a module (not a stdin script): Python 3.14 starts DataLoader workers with the
 `forkserver` method, which re-imports `__main__` from its file path.
@@ -16,15 +17,24 @@ import time
 
 import cv2
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from .data import PairDataset, cached_eval_queries, gallery_images, load_arts, split, worker_init
+from .data import (
+    PairDataset,
+    cached_eval_queries,
+    gallery_images,
+    load_arts,
+    split,
+    worker_init,
+)
 from .degrade import INPUT_SIZE
+from .detector import CornerNet, corner_loss, pose_loss, quad_to_pose
 from .evaluate import embed_images
 from .model import Embedder, describe_device, info_nce, pick_device
+from .synth import DET_INPUT, SceneDataset
 
 
-def bench_loader(dataset: PairDataset, workers: int, batch: int, batches: int, pin: bool) -> None:
+def bench_loader(dataset: Dataset, workers: int, batch: int, batches: int, pin: bool) -> None:
     loader = DataLoader(
         dataset,
         batch_size=batch,
@@ -71,6 +81,43 @@ def bench_model(device: torch.device, batch: int, steps: int, temperature: float
     return model
 
 
+def bench_detector_model(device: torch.device, batch: int, steps: int) -> None:
+    model = CornerNet(pretrained=False).to(device).train()
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    x = torch.randn(batch, 3, DET_INPUT, DET_INPUT, device=device)
+    target = torch.rand(batch, 4, 2, device=device)
+
+    def step() -> None:
+        pred, res, pose = model(x)
+        loss = corner_loss(pred, target, res) + pose_loss(pose, quad_to_pose(target))
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+
+    for _ in range(3):
+        step()
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(steps):
+        step()
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    dt = time.perf_counter() - t0
+    print(f"CornerNet fwd/bwd on {describe_device(device)}: {steps / dt:5.2f} batch/s, {steps * batch / dt:6.0f} samples/s")
+
+
+def bench_scene_render(n: int) -> None:
+    """Single-process render cost, the number the per-worker throughput should approach."""
+    dataset = SceneDataset(n, seed=123)
+    dataset[0]
+    t0 = time.perf_counter()
+    for i in range(1, n):
+        dataset[i]
+    dt = time.perf_counter() - t0
+    print(f"render_scene single-thread: {dt / (n - 1) * 1000:5.1f} ms/scene")
+
+
 def bench_eval(model: Embedder, arts: list[dict]) -> None:
     gallery = gallery_images(arts)
     queries, _, _ = cached_eval_queries(arts)
@@ -94,10 +141,20 @@ def main() -> None:
     parser.add_argument("--skip-loader", action="store_true")
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--skip-eval", action="store_true")
+    parser.add_argument("--detector", action="store_true", help="time cardid.train_detector's scene renderer and CornerNet instead")
     args = parser.parse_args()
     cv2.setNumThreads(0)
     device = pick_device(args.device)
     torch.set_num_threads(2 if device.type == "cuda" else max(2, (os.cpu_count() or 8) // 2))
+
+    if args.detector:
+        if not args.skip_loader:
+            bench_scene_render(40)
+            for workers in args.workers:
+                bench_loader(SceneDataset(10**6, seed=7), workers, args.batch, args.batches, pin=device.type == "cuda")
+        if not args.skip_model:
+            bench_detector_model(device, args.batch, 20)
+        return
 
     arts = load_arts()
     dataset = PairDataset(split(arts, "train"))

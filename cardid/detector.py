@@ -49,27 +49,52 @@ def pose_to_quad(pose: torch.Tensor) -> torch.Tensor:
 
 
 class CornerNet(nn.Module):
+    """MobileNetV3-Small trunk with a head that keeps the feature map's geometry.
+
+    Global average pooling (the first version of this head) keeps only *how much* card is in
+    the window, so it learned scale well but not where the card is or which way its edges
+    point. Here the stride-32 and stride-16 maps are fused at 16x16, squeezed to a few channels
+    and flattened, so every position keeps its own weights into the pose regression."""
+
+    FUSE = 64
+    SQUEEZE = 32
+
     def __init__(self, pretrained: bool = True):
         super().__init__()
         weights = MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
         backbone = mobilenet_v3_small(weights=weights)
-        self.features = backbone.features  # (N, 576, 8, 8) at 256px input
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.head = nn.Sequential(nn.Linear(576, 256), nn.Hardswish(), nn.Dropout(0.1), nn.Linear(256, 5 + 8))
+        self.stem = backbone.features[:9]  # (N, 48, 16, 16) at 256px input
+        self.top = backbone.features[9:]  # (N, 576, 8, 8)
+        self.lateral = nn.Conv2d(48, self.FUSE, 1)
+        self.reduce = nn.Conv2d(576, self.FUSE, 1)
+        self.squeeze = nn.Sequential(nn.Conv2d(self.FUSE, self.SQUEEZE, 3, padding=1), nn.Hardswish())
+        self.head = nn.Sequential(nn.Linear(self.SQUEEZE * 16 * 16, 256), nn.Hardswish(), nn.Dropout(0.1), nn.Linear(256, 5 + 8))
         # start as an upright card of short side 0.3 centred in the window
         with torch.no_grad():
             self.head[-1].weight.mul_(0.1)
             self.head[-1].bias.zero_()
             self.head[-1].bias[:5] = torch.tensor([0.5, 0.5, float(np.log(0.3)), 1.0, 0.0])
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (corners (N, 4, 2) in [0, 1] window units, residuals (N, 4, 2) in short-side units)."""
-        out = self.head(self.pool(self.features(x)).flatten(1))
+    def backbone_parameters(self):
+        yield from self.stem.parameters()
+        yield from self.top.parameters()
+
+    def head_parameters(self):
+        for m in (self.lateral, self.reduce, self.squeeze, self.head):
+            yield from m.parameters()
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns (corners (N, 4, 2) in [0, 1] window units, residuals (N, 4, 2) in short-side
+        units, raw pose (N, 5) [cx, cy, log short, cos2t, sin2t])."""
+        mid = self.stem(x)
+        top = self.reduce(self.top(mid))
+        fused = self.lateral(mid) + nn.functional.interpolate(top, size=mid.shape[-2:], mode="bilinear", align_corners=False)
+        out = self.head(self.squeeze(fused).flatten(1))
         pose, res = out[:, :5], out[:, 5:].view(-1, 4, 2)
         res = torch.tanh(res) * RESIDUAL
         quad = pose_to_quad(pose)
         short = pose[:, 2].exp()[:, None, None]
-        return quad + res * short, res
+        return quad + res * short, res, pose
 
 
 def corner_loss(pred: torch.Tensor, target: torch.Tensor, residual: torch.Tensor | None = None, residual_weight: float = 0.5) -> torch.Tensor:
@@ -80,6 +105,28 @@ def corner_loss(pred: torch.Tensor, target: torch.Tensor, residual: torch.Tensor
     if residual is not None:
         loss = loss + residual_weight * residual.pow(2).mean()
     return loss
+
+
+def quad_to_pose(quads: torch.Tensor) -> torch.Tensor:
+    """Best-fit (N, 5) [cx, cy, log short, cos2t, sin2t] for target quads, same units as the corners."""
+    rows = []
+    for q in quads.detach().cpu().numpy():
+        cx, cy, short, angle = fit_card_pose(q)
+        t = np.radians(angle)
+        rows.append((cx, cy, np.log(max(short, 1e-4)), np.cos(2 * t), np.sin(2 * t)))
+    return torch.tensor(rows, dtype=torch.float32, device=quads.device)
+
+
+def pose_loss(pose: torch.Tensor, target_pose: torch.Tensor) -> torch.Tensor:
+    """Direct supervision of the raw pose. The corner loss alone has a local minimum with the
+    card turned 90 degrees (corners move only ~0.2 short sides, and the (cos2t, sin2t) output
+    would have to pass through the origin to escape); the L2 distance to the target angle
+    vector is convex in the raw outputs and has its maximum there instead. Centre and log
+    size get L1 terms so early training does not have to discover them through the corners."""
+    centre = (pose[:, :2] - target_pose[:, :2]).abs().mean()
+    size = (pose[:, 2] - target_pose[:, 2]).abs().mean()
+    angle = (pose[:, 3:] - target_pose[:, 3:]).pow(2).sum(dim=1).mean()
+    return centre + 0.1 * size + 0.1 * angle
 
 
 def corner_error(pred: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -138,7 +185,7 @@ class Detector:
         """Corners (4x2, image px) of the card in the `side`-px square centred on (cx, cy)."""
         win, M = window_around(img, cx, cy, side, DET_INPUT)
         x = scene_to_input(win)[None].to(self.device)
-        quad, _ = self.model(x)
+        quad, _, _ = self.model(x)
         quad = quad[0].cpu().numpy() * DET_INPUT
         Minv = cv2_invert(M)
         return apply_affine(Minv, quad)
