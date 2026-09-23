@@ -17,6 +17,7 @@ import numpy as np
 import torch
 
 from . import corrections, nightly, retrain, train
+from .gallery import bundle_index
 from .workflow import find_manifest, resolve_checkpoint, sha256, trained_checkpoint
 
 
@@ -31,8 +32,11 @@ class RetrainTest(unittest.TestCase):
         self.detector = self.write(self.runs / "not-named-det" / "last.pt", b"detector")
         self.bundle = self.data / "bundles" / "baseline"
         files = {}
-        for name in ("detector.onnx", "embed.onnx", "search.onnx", "arts.json"):
-            path = self.write(self.bundle / name, b"[]")
+        # The held-out label "art" is a sibling printing, which exported bundles keep in
+        # printings.json rather than arts.json; "reprint" only exists in newer galleries.
+        contents = {"arts.json": b'[{"id":"art-row"},{"id":"other"}]', "printings.json": b'{"art-row":[{"id":"art"}]}'}
+        for name in ("detector.onnx", "embed.onnx", "search.onnx", "arts.json", "printings.json"):
+            path = self.write(self.bundle / name, contents.get(name, b"[]"))
             files[name] = {"sha256": sha256(path)}
         self.manifest = {
             "version": "baseline",
@@ -80,6 +84,10 @@ class RetrainTest(unittest.TestCase):
             self.write(self.runs / run / "last.pt", b"last")
             if not self.last_only:
                 self.write(self.runs / run / "best.pt", b"best")
+        elif cmd[2] == "cardid.export":
+            out = self.data / "bundles" / cmd[cmd.index("--version") + 1]
+            self.write(out / "arts.json", b'[{"id":"art-row"},{"id":"other"},{"id":"reprint"}]')
+            self.write(out / "printings.json", b'{"art-row":[{"id":"art"}]}')
         elif cmd[2] == "cardid.publish" and self.fail_publish:
             raise subprocess.CalledProcessError(1, cmd)
 
@@ -87,12 +95,15 @@ class RetrainTest(unittest.TestCase):
         kwargs = {"scorer": scorer} if scorer else {}
         return retrain.run(self.args(*extra), data=self.data, runner=self.fake_runner, version="retrain-test", **kwargs)
 
-    def real_rows(self, *, train=True, evaluation=True, known=True):
+    def real_rows(self, *, train=True, evaluation=True, known=True, newer=False):
         rows = []
         for split, enabled in (("train", train), ("eval", evaluation)):
             if enabled:
                 rows.append({"capture_id": split, "label": "art" if known else "unknown", "split": split})
                 self.write(self.data / "real" / split / "card.png", b"card")
+        if newer:
+            rows.append({"capture_id": "eval-newer", "label": "reprint", "split": "eval"})
+            self.write(self.data / "real" / "eval-newer" / "card.png", b"card")
         self.write(self.data / "real" / "labels.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
         self.write(self.data / "arts.json", b'[{"id":"art"}]')
         self.write(self.data / "art" / "art.jpg", b"art")
@@ -314,6 +325,34 @@ class RetrainTest(unittest.TestCase):
         self.assertEqual(report["baseline"]["correct"], 3)
         self.assertEqual(report["candidate"]["correct"], 3)
         self.assertEqual(self.commands[-1][2], "cardid.publish")
+
+    def test_bundle_index_resolves_sibling_printings_from_the_on_demand_file(self):
+        index = bundle_index(self.bundle)
+        # A sibling printing maps to its embedded art's row; a bundle without printings.json still indexes arts.
+        self.assertEqual((index["art"], index["art-row"], index["other"]), (0, 0, 1))
+        (self.bundle / "printings.json").unlink()
+        self.assertEqual(bundle_index(self.bundle), {"art-row": 0, "other": 1})
+
+    def test_sibling_printing_labels_score_and_newer_labels_are_dropped(self):
+        self.real_rows(newer=True)
+        scored = []
+
+        def scorer(bundle_path, rows, real):
+            scored.append((bundle_path.name, [r["capture_id"] for r in rows]))
+            return {"count": len(rows), "correct": len(rows), "captures": "same", "top1": 1.0}
+
+        report = self.run_pipeline(scorer=scorer)
+        # Both bundles score the same single sibling-labelled capture; the baseline cannot know "reprint".
+        self.assertEqual(scored, [("baseline", ["eval"]), ("retrain-test", ["eval"])])
+        self.assertEqual(report["dropped_captures"], ["eval-newer"])
+        self.assertEqual(report["status"], "published")
+        self.assertIn("eval-newer -> reprint", self.output.getvalue())
+
+    def test_no_commonly_known_held_out_label_refuses(self):
+        self.real_rows(known=False)
+        with self.assertRaisesRegex(SystemExit, "no held-out label is known to both bundles"):
+            self.run_pipeline(scorer=self.scores())
+        self.assertNotIn("cardid.publish", [c[2] for c in self.commands if len(c) > 2])
 
     def test_regression_refuses_and_keeps_nightly_state(self):
         self.real_rows()

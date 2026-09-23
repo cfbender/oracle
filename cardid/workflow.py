@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from . import ML_DIR
-from .gallery import printing_index
+from .gallery import bundle_index
 
 
 def sha256(path: Path) -> str:
@@ -37,12 +37,23 @@ def publish_allowed(new_data: bool, baseline: dict, candidate: dict) -> bool:
     )
 
 
+def comparable_rows(rows: list[dict], *bundle_paths: Path) -> tuple[list[dict], list[dict]]:
+    """Split held-out captures into those every bundle can score and those it cannot.
+
+    A label is unknown to a bundle when the printing joined Scryfall after that bundle was
+    exported (or a later gallery rule retired it); scoring both bundles on the common subset
+    keeps the comparison like-for-like instead of failing the whole run."""
+    indexes = [bundle_index(path) for path in bundle_paths]
+    kept = [r for r in rows if all(r["label"] in index for index in indexes)]
+    return kept, [r for r in rows if r not in kept]
+
+
 def score(bundle_path: Path, rows: list[dict], real: Path) -> dict:
     from .bundle import Bundle
     from .degrade import load_rgb
 
     bundle = Bundle(bundle_path)
-    gallery = printing_index(bundle.arts)
+    gallery = bundle_index(bundle_path)
     missing = {r["label"] for r in rows} - gallery.keys()
     if missing:
         raise SystemExit(f"refusing incomparable evaluation: {len(missing)} held-out labels missing from {bundle_path}")

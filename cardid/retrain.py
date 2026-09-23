@@ -17,6 +17,7 @@ from .gallery import printing_index
 from .workflow import (
     check_destination,
     command,
+    comparable_rows,
     find_manifest,
     fingerprint,
     publish_allowed,
@@ -213,8 +214,15 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
             )
             allowed = True
             if baseline_path:
-                baseline = scorer(baseline_path, eval_rows, data / "real")
-                candidate = scorer(bundle, eval_rows, data / "real")
+                scored_rows, dropped = comparable_rows(eval_rows, baseline_path, bundle)
+                if dropped:
+                    labels = ", ".join(f"{r['capture_id']} -> {r['label']}" for r in dropped)
+                    print(f"WARNING: {len(dropped)} held-out captures are unknown to one bundle and are not compared: {labels}", flush=True)
+                    report["dropped_captures"] = [r["capture_id"] for r in dropped]
+                if not scored_rows:
+                    raise SystemExit("refusing incomparable held-out evaluation: no held-out label is known to both bundles")
+                baseline = scorer(baseline_path, scored_rows, data / "real")
+                candidate = scorer(bundle, scored_rows, data / "real")
                 # --force overrides regression only, not incomparable or empty evaluations.
                 comparable = publish_allowed(True, {**baseline, "correct": 0}, candidate)
                 allowed = publish_allowed(True, baseline, candidate)

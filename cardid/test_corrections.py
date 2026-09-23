@@ -87,7 +87,7 @@ class CorrectionsTest(unittest.TestCase):
 
     def test_exact_sibling_label_trains_and_scores_against_shared_artwork(self):
         from . import data, real
-        from .gallery import printing_index
+        from .gallery import printing_index, runtime_metadata
 
         canonical = "22222222-2222-2222-2222-222222222222-1"
         sibling = LABEL + "-1"
@@ -107,8 +107,13 @@ class CorrectionsTest(unittest.TestCase):
             self.assertGreater(float(dataset[0][0][0].mean()), 2)
             _, targets, _ = real.real_eval_queries([saved], printing_index(arts))
             self.assertEqual(targets.tolist(), [1])
+        # Score reads the bundle's files as `cardid.export` writes them: compact arts.json
+        # without the printings lists, which live in printings.json.
+        compact, printings = runtime_metadata(arts, ["modern", "modern"])
+        self.assertNotIn("printings", compact[1])
+        (self.root / "arts.json").write_text(json.dumps(compact))
+        (self.root / "printings.json").write_text(json.dumps(printings))
         with patch("cardid.bundle.Bundle") as bundle:
-            bundle.return_value.arts = arts
             bundle.return_value.identify.return_value = {"results": [{"id": canonical}]}
             self.assertEqual(score(self.root, [saved], self.real)["correct"], 1)
             bundle.return_value.identify.return_value = {"results": [{"id": "other-art"}]}

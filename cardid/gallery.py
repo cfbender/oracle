@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 ART_FIELDS = ("id", "name", "set", "collector_number", "layout", "face", "lang", "illustration_id", "url")
 
@@ -20,6 +21,16 @@ def runtime_metadata(arts: list[dict], frames: list[str]) -> tuple[list[dict], d
 
 def printing_index(arts: list[dict]) -> dict[str, int]:
     return {printing_id: i for i, art in enumerate(arts) for printing_id in [art["id"], *(p["id"] for p in art.get("printings", []))]}
+
+
+def bundle_index(bundle_path: Path) -> dict[str, int]:
+    """Every selectable ID in an exported bundle: embedded arts from arts.json plus the sibling
+    printings that `runtime_metadata` moved to the on-demand printings.json. A correction made
+    through the printing chooser is labelled with a sibling ID, so scoring must resolve both."""
+    arts = json.loads((bundle_path / "arts.json").read_text())
+    printings_path = bundle_path / "printings.json"
+    printings = json.loads(printings_path.read_text()) if printings_path.exists() else {}
+    return printing_index([{**art, "printings": printings.get(art["id"], [])} for art in arts])
 
 
 def gallery_fingerprint(arts: list[dict]) -> str:

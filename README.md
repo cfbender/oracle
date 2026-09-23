@@ -55,7 +55,13 @@ does not change it. `--workers` overrides `CARDID_WORKERS`, otherwise trainers c
 device. Other trainer hyperparameters use their normal defaults, not nightly's reduced rates.
 
 Export always verifies 64 scenes. When held-out real captures exist, both ONNX bundles are
-scored on the same raw crops using nightly's non-regression gate. A regression refuses
+scored on the same raw crops using nightly's non-regression gate. Labels are resolved through
+each bundle's `arts.json` plus `printings.json`, so a correction made through the printing
+chooser (a sibling printing ID) counts as its shared artwork. Captures whose label only one
+bundle knows (a printing that joined Scryfall after the baseline was exported, or one a later
+gallery rule retired) are listed with a warning, recorded as `dropped_captures` in the report,
+and left out of both scores; the run only refuses when no held-out label is common to both
+bundles. A regression refuses
 publication unless `--force`; missing labels, missing baselines, incomparable datasets,
 export parity failures, changed labels or a changed server manifest cannot be forced.
 Without held-out captures, retrain warns and permits publication with **no real accuracy
