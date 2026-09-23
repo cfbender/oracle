@@ -382,14 +382,30 @@ you pass `--force` for one that was never published:
 | `detector.onnx` | uint8 RGBA 256×256 window → card `quad` (4×2, window px, printed order), `up` (2), `centre` (2), `short` side. Runs the four 90° rotations, corner snapping, orientation vote and pose inside the graph. |
 | `embed.onnx` | uint8 RGBA scene (any H×W) + quad → 6×128 embeddings, one per frame cut (`detect.FRAMES`). The projective warp is a `GridSample`, so no OpenCV is needed in the browser. |
 | `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores. The gallery (f16 by default, `--gallery-dtype f32`) and the frame prior (`--frame-penalty`, default 0.02) are baked in; `--topk` defaults to 5. |
-| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`, `illustration_id`, nested `printings`. |
+| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`, `illustration_id`, crop `url`, `printing_count`. No nested siblings. |
+| `printings.json` | representative art ID → all selectable sibling printing records. Downloaded only on the first gallery search or printing expansion, shared and cached by bundle version. |
 | `manifest.json` | version, checkpoint sha256s, gallery size, every constant the glue code needs (scene 640, detector input 256, refine fill 0.6 / min side 64, card 250×350, art input 128, frame names, opset 17), per-file bytes + sha256. |
 | `SHA256SUMS` | what `publish` and the server verify. |
 
 Graph sizes at 49k arts: detector 12.6 MB, embed 5.1 MB, search ≈13 MB (f16).
 All-language printing metadata is much larger than the former ~7 MB flat gallery; allow
-roughly 140 MB for uncompressed `arts.json` and ~393 MB for the compressed all-card bulk.
+roughly 140 MB for uncompressed sibling metadata and ~393 MB for the compressed all-card bulk.
+It lives in `printings.json`, not the worker's initial `arts.json`. An explicit search or
+printing expansion downloads this whole optional file once; ordinary identification does not.
 The browser caches bundle files by version; the search graph still has only ~52k rows.
+
+The table creates no recognition worker or model requests on room entry. The first card
+click or gallery search starts it and waits for warmup, with a loading indicator. The
+two-second inference timeout starts only after warmup. Settings > Card scan reports
+"Not loaded" until then. No idle prefetch or dialog splitting is enabled.
+
+**Regenerate and publish a new immutable version to get the metadata split.** Use the
+existing export/publish commands below and existing checkpoints; no retraining is needed.
+Do not hand-edit a published `arts.json`: export writes checksums for both metadata files
+and preserves exactly the embedding index order and graph parity verification. Training
+`data/arts.json` keeps its siblings for correction-label resolution. Old browser bundles,
+with embedded siblings or only representative printings, still work without regeneration,
+but cannot gain printing coverage they never contained.
 
 `export` ends with a parity check (`--verify N`, default 64, `0` to skip): it renders N
 synthetic scenes, runs the torch pipeline and the bundle through onnxruntime on each, and fails

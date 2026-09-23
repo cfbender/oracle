@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from . import scryfall
 from .detect import frame_of
+from .gallery import runtime_metadata
 
 ABRADE = {
     "id": "d1ed5b20-94f6-455f-80a5-e4ed360167be",
@@ -57,6 +58,30 @@ STUDIOUS = {
 
 
 class ScryfallTest(unittest.TestCase):
+    def test_runtime_metadata_keeps_embedding_order_but_defers_siblings(self):
+        entries = [
+            {
+                "id": "back-1",
+                "name": "Back",
+                "face": 1,
+                "lang": "ja",
+                "url": "crop",
+                "split": "train",
+                "printings": [{"id": "sibling", "name": "Other name", "lang": "de", "set": "fin"}],
+            },
+            {"id": "front", "name": "Front"},
+        ]
+        arts, printings = runtime_metadata(entries, ["2015", "1993"])
+        self.assertEqual(
+            arts,
+            [
+                {"id": "back-1", "name": "Back", "face": 1, "lang": "ja", "url": "crop", "frame": "2015", "printing_count": 1},
+                {"id": "front", "name": "Front", "frame": "1993", "printing_count": 0},
+            ],
+        )
+        self.assertEqual(printings, {"back-1": entries[0]["printings"]})
+        self.assertIn("printings", entries[0])
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

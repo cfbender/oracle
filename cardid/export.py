@@ -39,6 +39,7 @@ from .bundle import REFINE_FILL, REFINE_MIN_SIDE
 from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_PENALTY, art_crops, frame_penalties, warp_card
 from .detector import CARD_ASPECT, CornerNet, Detector, load_checkpoint
+from .gallery import runtime_metadata
 from .graphs import ROTATIONS, DetectorGraph, EmbedGraph, SearchGraph
 from .index import ArtIndex
 from .synth import DET_INPUT, SCENE
@@ -46,7 +47,6 @@ from .synth import DET_INPUT, SCENE
 BUNDLE_DIR = DATA_DIR / "bundles"
 SUMS = "SHA256SUMS"
 OPSET = 17
-ART_FIELDS = ("id", "name", "set", "collector_number", "layout", "face", "lang", "illustration_id", "printings")
 CLEAR_MARGIN = 0.02  # torch top-1 lead over the runner-up above which the bundle must agree
 
 
@@ -121,8 +121,9 @@ def export_bundle(checkpoint: Path, detector: Path, out: Path, frame_penalty: fl
         example = (torch.zeros(len(FRAME_NAMES), index.embeddings.shape[1]),)
         export_graph(search, example, out / "search.onnx", ["embeddings"], ["indices", "scores"], fold=False)
 
-    arts = [{**{k: a[k] for k in ART_FIELDS if k in a}, "frame": FRAME_NAMES[f]} for a, f in zip(index.arts, index.frames, strict=True)]
+    arts, printings = runtime_metadata(index.arts, [FRAME_NAMES[f] for f in index.frames])
     (out / "arts.json").write_text(json.dumps(arts, separators=(",", ":")))
+    (out / "printings.json").write_text(json.dumps(printings, separators=(",", ":")))
     files = {p.name: {"bytes": p.stat().st_size, "sha256": sha256(p)} for p in sorted(out.iterdir()) if p.name not in ("manifest.json", SUMS)}
     manifest = {
         "version": out.name,
