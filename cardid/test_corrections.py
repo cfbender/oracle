@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -250,4 +251,28 @@ class CorrectionsTest(unittest.TestCase):
         self.assertFalse((dest / "v1").exists())
         result = subprocess.run(["bash", "-c", remote_script(str(dest), "v4", 1, "stale")], input=b"", capture_output=True)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"changed since evaluation", result.stderr)
         self.assertEqual((dest / "current").readlink(), Path("v3"))
+        result = subprocess.run(["bash", "-c", remote_script(str(dest), "v3", 1)], input=b"", capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"v3 already exists", result.stderr)
+        self.assertEqual((dest / "current").readlink(), Path("v3"))
+
+    def test_remote_publish_wraps_script_in_bash_for_foreign_login_shells(self):
+        """`ssh host <script>` runs under the remote login shell; publishing must still work when that is plain `sh`."""
+        from .publish import publish_remote
+
+        dest = self.root / "remote-sh"
+        fake_ssh = self.root / "bin" / "ssh"
+        fake_ssh.parent.mkdir()
+        # Emulate a host whose login shell is `sh`: run the received command string with `sh -c`.
+        fake_ssh.write_text('#!/bin/sh\nshift\nexec sh -c "$1"\n')
+        fake_ssh.chmod(0o755)
+        bundle = self.bundle("v1")
+        with patch.dict(os.environ, {"PATH": f"{fake_ssh.parent}:{os.environ['PATH']}"}):
+            publish_remote(bundle, "nuc", str(dest), keep=1)
+            self.assertEqual((dest / "current").readlink(), Path("v1"))
+            with self.assertRaises(SystemExit) as raised:
+                publish_remote(bundle, "nuc", str(dest), keep=1)
+        self.assertIn("see the message above", str(raised.exception))
+        self.assertEqual((dest / "current").readlink(), Path("v1"))

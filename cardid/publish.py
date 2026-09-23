@@ -61,18 +61,23 @@ def remote_script(dest: str, version: str, keep: int | None, expected_current: s
         if keep
         else ""
     )
-    guard = f"test \"$(sha256sum {d}/current/manifest.json | cut -d' ' -f1)\" = {shlex.quote(expected_current)}\n" if expected_current else ""
+    guard = (
+        f"test \"$(sha256sum {d}/current/manifest.json | cut -d' ' -f1)\" = {shlex.quote(expected_current)} || "
+        f'{{ echo "publish: {d}/current changed since evaluation; refusing to publish" >&2; exit 1; }}\n'
+        if expected_current
+        else ""
+    )
     return (
         "set -euo pipefail\n"
         f"mkdir -p {d}\nexec 9>{d}/.publish.lock\nflock -x 9\n"
         f"{guard}"
-        f"test ! -e {d}/{v}\n"
+        f'test ! -e {d}/{v} || {{ echo "publish: {d}/{v} already exists; export with a new --version or remove it" >&2; exit 1; }}\n'
         f"mkdir -p {d}/.incoming && rm -rf {d}/.incoming/{v}\n"
         f"tar -xzf - -C {d}/.incoming\n"
         f"(cd {d}/.incoming/{v} && sha256sum --quiet -c {SUMS})\n"
         f"mv {d}/.incoming/{v} {d}/{v}\n"
         f'if [ -L {d}/current ]; then ln -sfn "$(readlink {d}/current)" {d}/previous.tmp && mv -Tf {d}/previous.tmp {d}/previous; '
-        f'elif [ -d {d}/current ]; then echo "current must be a symlink" >&2; exit 1; fi\n'
+        f'elif [ -d {d}/current ]; then echo "publish: {d}/current must be a symlink; move the copied directory to {d}/<version> and symlink it" >&2; exit 1; fi\n'
         f"ln -sfn {v} {d}/current.tmp && mv -Tf {d}/current.tmp {d}/current\n"
         f"{prune}"
         f"echo published {v} && ls -l {d}/current"
@@ -84,10 +89,13 @@ def publish_remote(bundle: Path, host: str, dest: str, keep: int | None, expecte
         tarball = Path(tmp) / f"{bundle.name}.tar.gz"
         subprocess.run(["tar", "-czf", str(tarball), "-C", str(bundle.parent), bundle.name], check=True)
         print(f"uploading {tarball.stat().st_size / 1e6:.1f} MB to {host}:{dest}/{bundle.name} ...")
+        # Run under bash explicitly: the script relies on pipefail and `{ ...; }` groups, which the
+        # remote user's login shell (dash, fish, ...) may not accept.
+        script = f"bash -c {shlex.quote(remote_script(dest, bundle.name, keep, expected_current))}"
         with tarball.open("rb") as f:
-            result = subprocess.run(["ssh", host, remote_script(dest, bundle.name, keep, expected_current)], stdin=f)
+            result = subprocess.run(["ssh", host, script], stdin=f)
     if result.returncode != 0:
-        raise SystemExit(f"publish failed on {host} (exit {result.returncode})")
+        raise SystemExit(f"publish failed on {host} (exit {result.returncode}); see the message above from the remote shell")
 
 
 def publish_local(bundle: Path, dest: Path, keep: int | None, expected_current: str | None = None) -> None:

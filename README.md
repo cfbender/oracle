@@ -407,6 +407,13 @@ place and atomically repoints `<path>/current` at it, then prunes old versions b
 (default 3). A failed transfer or a tampered file never touches `current`. The Phoenix side
 serves `DATA_DIR/cardid/current/*` and the browser caches by `manifest.json` version.
 
+`publish failed on <host>` is the wrapper; the reason is the `publish: ...` line printed just
+above it by the host: the version directory already exists (re-export with a new `--version`
+or remove the leftover on the host), `current` is a copied directory instead of a symlink (move
+it to `<path>/<version>` and `ln -s <version> current`), or, from the nightly, `current` changed
+since the candidate was evaluated. The host needs `bash`, `flock`, `tar` and GNU coreutils; the
+script is run under `bash -c` so the login shell does not matter.
+
 ### New sets
 
 New cards need gallery embeddings, not retraining (the recogniser learned "compare arts", not
