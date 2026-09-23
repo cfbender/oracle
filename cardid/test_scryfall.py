@@ -113,6 +113,37 @@ class ScryfallTest(unittest.TestCase):
         self.assertTrue(scryfall.usable({**ABRADE, "lang": "zhs", "image_status": "lowres"}))
         self.assertFalse(scryfall.usable({**JADZI, "digital": True}))
 
+    def test_playtest_cards_are_rejected_and_retired_from_an_older_arts_json(self):
+        # Bind // Liberate (cmb1) is a `split`-layout sketch card in a plain frame; its flat
+        # crop became a hub for degraded real-camera queries. Unfinity stays: it is `funny`
+        # but not playtest.
+        bind = {**STUDIOUS, "id": "22222222-2222-2222-2222-222222222222", "layout": "split", "set": "cmb1", "set_type": "funny", "promo_types": ["playtest"]}
+        unfinity = {**ABRADE, "id": "33333333-3333-3333-3333-333333333333", "set": "unf", "set_type": "funny", "promo_types": []}
+        self.assertFalse(scryfall.usable(bind))
+        self.assertTrue(scryfall.usable(unfinity))
+        excluded = set()
+        with gzip.open(self.bulk, "wt") as out:
+            for card in [bind, ABRADE, unfinity]:
+                out.write(json.dumps(card) + "\n")
+        entries = scryfall.usable_entries(self.bulk, excluded)
+        self.assertEqual([e["set"] for e in entries], ["soa", "unf"])
+        self.assertEqual(excluded, {bind["id"], f"{bind['id']}-1"})
+
+        # An arts.json exported before the rule keeps both halves at their indices, so a
+        # resumed checkpoint's classes and the eval split do not move; only the flag changes.
+        old = [
+            {"id": bind["id"], "split": "train", "illustration_id": "bind:face:0", "url": "x"},
+            {"id": f"{bind['id']}-1", "split": "eval", "illustration_id": "bind:face:1", "url": "x"},
+            dict(entries[0], split="eval"),
+        ]
+        self.assertEqual(scryfall.add_metadata(old, entries, excluded), 2)
+        self.assertEqual([a["id"] for a in old], [bind["id"], f"{bind['id']}-1", ABRADE["id"]])
+        self.assertEqual([a.get("excluded", False) for a in old], [True, True, False])
+        self.assertEqual([a.get("alias_of") for a in old], [None, None, None])
+        self.assertEqual([scryfall.embeds(a) for a in old], [False, False, True])
+        self.assertEqual(scryfall.add_metadata(old, entries, excluded), 0)
+        self.assertEqual(len(scryfall.extend_to_all(old, entries, excluded)), 4)  # Unfinity is added, Bind is not re-added
+
     def test_layouts_with_shared_crops_and_exclusions(self):
         for layout in ["prepare", "adventure", "meld"]:
             with self.subTest(layout=layout):

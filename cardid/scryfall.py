@@ -82,8 +82,21 @@ def download_bulk(client: httpx.Client, dest: Path) -> Path:
 
 def usable(card: dict) -> bool:
     return (
-        "paper" in card.get("games", []) and card.get("image_status") in ("highres_scan", "lowres") and not card.get("digital", False) and bool(art_faces(card))
+        "paper" in card.get("games", [])
+        and card.get("image_status") in ("highres_scan", "lowres")
+        and not card.get("digital", False)
+        and not playtest(card)
+        and bool(art_faces(card))
     )
+
+
+def playtest(card: dict) -> bool:
+    """Mystery Booster / Playtest sketch cards are near-textureless line art in a plain frame,
+    regardless of their nominal `layout`. Their embeddings sit near everything and become hubs
+    that soak up degraded queries (nine of sixteen real-camera misses once landed on one
+    `split`-layout playtest card), and they are not Commander-legal. Keyed on `promo_types`
+    rather than `set_type: funny`, which would also drop Unfinity's legal cards."""
+    return "playtest" in card.get("promo_types", [])
 
 
 def art_faces(card: dict) -> list[tuple[int, dict]]:
@@ -99,7 +112,10 @@ def supported_faces(card: dict) -> list[dict]:
     return [] if layout in TWO_PART_LAYOUTS and len(faces) != 2 else faces
 
 
-def usable_entries(bulk: Path) -> list[dict]:
+def usable_entries(bulk: Path, excluded: set[str] | None = None) -> list[dict]:
+    """Every paper artwork worth embedding, with its selectable printings. When `excluded` is
+    given, it collects the face IDs of paper cards this version rejects (see `playtest`) so an
+    arts.json written before the rule can retire those rows without renumbering the rest."""
     groups = {}
     with gzip.open(bulk, "rt", encoding="utf-8") as f:
         for line in f:
@@ -108,6 +124,10 @@ def usable_entries(bulk: Path) -> list[dict]:
                 continue
             layout = card.get("layout")
             faces = supported_faces(card)
+            if playtest(card):
+                if excluded is not None:
+                    excluded.update(card["id"] if i == 0 else f"{card['id']}-{i}" for i in range(len(faces)))
+                continue
             for face_index, face in enumerate(faces):
                 printing = {
                     "id": card["id"] if face_index == 0 else f"{card['id']}-{face_index}",
@@ -168,14 +188,20 @@ def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> li
 METADATA_FIELDS = ("layout", "collector_number", "face", "lang", "illustration_id", "layout_group")
 
 
-def add_metadata(arts: list[dict], entries: list[dict]) -> int:
+def add_metadata(arts: list[dict], entries: list[dict], excluded: set[str] = frozenset()) -> int:
     """Backfill METADATA_FIELDS into an arts.json written before they were recorded; returns
     how many entries changed. The recogniser needs `layout` to tell a saga's right-half art
     from a class or case card's left-half art (`detect.frame_of`); the capture tool's search
-    shows and matches `collector_number` to pick one of a set's many Forests."""
+    shows and matches `collector_number` to pick one of a set's many Forests.
+
+    Rows whose ID is in `excluded` are kept (so indices and splits of the others never move)
+    but flagged `excluded`, which `data.load_arts` and the downloaders skip."""
     by_id = {p["id"]: (e, p) for e in entries for p in e["printings"]}
     changed = set()
     for a in arts:
+        if a["id"] in excluded and not a.get("excluded"):
+            a["excluded"] = True
+            changed.add(a["id"])
         match = by_id.get(a["id"])
         if not match:
             continue
@@ -191,7 +217,7 @@ def add_metadata(arts: list[dict], entries: list[dict]) -> int:
     # Old unique_artwork exports can repeat a reverse illustration. Keep every persisted
     # ID/split, but embed only one row; prefer a held-out row to avoid train/eval leakage.
     representatives = {}
-    for a in sorted(arts, key=lambda a: a["split"] != "eval"):
+    for a in sorted(arts, key=lambda a: (bool(a.get("excluded")), a["split"] != "eval")):
         key = a.get("illustration_id", a["id"])
         representative = representatives.setdefault(key, a["id"])
         if a["id"] != representative:
@@ -201,10 +227,17 @@ def add_metadata(arts: list[dict], entries: list[dict]) -> int:
     return len(changed)
 
 
-def extend_to_all(existing: list[dict], entries: list[dict]) -> list[dict]:
+def embeds(art: dict) -> bool:
+    """Whether a persisted row contributes a gallery embedding. Aliases of another row's
+    illustration and cards a later `usable` rule retired (`excluded`) keep their index and
+    split in arts.json but are neither downloaded nor embedded."""
+    return not (art.get("alias_of") or art.get("excluded"))
+
+
+def extend_to_all(existing: list[dict], entries: list[dict], excluded: set[str] = frozenset()) -> list[dict]:
     """Keep an existing sample and its splits (so evaluations stay comparable) and add every
     other usable artwork as training data."""
-    add_metadata(existing, entries)
+    add_metadata(existing, entries, excluded)
     known = {e.get("illustration_id", e["id"]) for e in existing}
     added = [dict(e, split="train") for e in entries if e["illustration_id"] not in known]
     print(f"keeping {len(existing)} sampled arts, adding {len(added)} as train")
@@ -247,7 +280,7 @@ def download_cards(client: httpx.Client, arts: list[dict], n: int, seed: int) ->
     has them). Deterministic in `seed`; rerunning with a larger `n` only adds cards."""
     CARD_DIR.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
-    picked = [a for a in arts if a["split"] == "train" and not a.get("alias_of")]
+    picked = [a for a in arts if a["split"] == "train" and embeds(a)]
     rng.shuffle(picked)
     entries = [{"id": a["id"], "card_url": card_image_url(a["url"])} for a in picked[:n]]
     failed = 0
@@ -298,19 +331,22 @@ def main() -> None:
         if args.metadata:
             if arts is None:
                 raise SystemExit("run the art_crop download first so data/arts.json exists")
-            changed = add_metadata(arts, usable_entries(bulk))
+            excluded = set()
+            entries = usable_entries(bulk, excluded)
+            changed = add_metadata(arts, entries, excluded)
             arts_path.write_text(json.dumps(arts))
             print(f"metadata ({', '.join(METADATA_FIELDS)}) added to {changed} of {len(arts)} arts")
             return
         if arts is None or args.all or args.update:
-            entries = usable_entries(bulk)
+            excluded = set()
+            entries = usable_entries(bulk, excluded)
             if arts is None:
                 arts = sample_arts(entries, args.train, args.eval, args.seed)
             if args.all or args.update:
-                arts = extend_to_all(arts, entries)
-            add_metadata(arts, entries)
+                arts = extend_to_all(arts, entries, excluded)
+            add_metadata(arts, entries, excluded)
             arts_path.write_text(json.dumps(arts))
-        arts = [a for a in arts if not a.get("alias_of")]
+        arts = [a for a in arts if embeds(a)]
         if args.update:
             # only the new arts need fetching; `fetch_image` skips files that exist anyway, but
             # this keeps a routine refresh from walking 49k files
