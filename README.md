@@ -372,8 +372,10 @@ uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector 
 uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to nuc:/srv/the-gathering/cardid
 ```
 
-`export` writes `data/bundles/<version>/` (default version `<today>-<checkpoint run name>`,
-override with `--version` or `--out`):
+`export` writes `data/bundles/<version>/` (default version `<UTC timestamp>-<checkpoint run name>`,
+for example `2026-09-23T171512Z-full-3`; override with `--version` or `--out`). Published versions
+are immutable on the host, so `export` refuses to overwrite an existing bundle directory unless
+you pass `--force` for one that was never published:
 
 | file | contents |
 |---|---|

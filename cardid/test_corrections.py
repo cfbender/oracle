@@ -258,6 +258,20 @@ class CorrectionsTest(unittest.TestCase):
         self.assertIn(b"v3 already exists", result.stderr)
         self.assertEqual((dest / "current").readlink(), Path("v3"))
 
+    def test_default_export_version_is_unique_per_export_and_publishable(self):
+        from datetime import UTC, datetime
+
+        from .export import default_version
+
+        checkpoint = Path("data/runs/full-3/best.pt")
+        first = default_version(checkpoint, datetime(2026, 9, 23, 9, 5, 7, tzinfo=UTC))
+        second = default_version(checkpoint, datetime(2026, 9, 23, 17, 15, 12, tzinfo=UTC))
+        self.assertEqual(first, "2026-09-23T090507Z-full-3")
+        self.assertNotEqual(first, second)  # two exports on the same day must not collide on the host
+        self.assertLess(first, second)  # lexical order follows time so `ls` and pruning read naturally
+        # The same rules publish.check_bundle applies to a directory name.
+        self.assertRegex(second, r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
     def test_remote_publish_wraps_script_in_bash_for_foreign_login_shells(self):
         """`ssh host <script>` runs under the remote login shell; publishing must still work when that is plain `sh`."""
         from .publish import publish_remote

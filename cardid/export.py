@@ -2,7 +2,8 @@
 
     uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
 
-writes data/bundles/<version>/ (version defaults to <today>-<checkpoint run name>):
+writes data/bundles/<version>/ (version defaults to <UTC timestamp>-<checkpoint run name>, e.g.
+2026-09-23T171512Z-full-3; an existing bundle is never overwritten without --force):
 
     manifest.json   version, source checkpoints, gallery size, constants, per-file sha256
     detector.onnx   window (256, 256, 4) uint8 RGBA -> quad, up, centre, short  (see graphs.DetectorGraph)
@@ -82,6 +83,12 @@ def export_graph(
         do_constant_folding=fold,
     )
     print(f"wrote {path.name} ({path.stat().st_size / 1e6:.1f} MB)")
+
+
+def default_version(checkpoint: Path, now: datetime | None = None) -> str:
+    """`<UTC timestamp>-<checkpoint run name>`, unique per export so a same-day re-export never reuses
+    a name the host has already published (versions there are immutable)."""
+    return f"{now or datetime.now(UTC):%Y-%m-%dT%H%M%SZ}-{checkpoint.parent.name}"
 
 
 def export_bundle(checkpoint: Path, detector: Path, out: Path, frame_penalty: float, topk: int, gallery_dtype: str) -> tuple[ArtIndex, Detector]:
@@ -204,8 +211,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--checkpoint", required=True, help="recogniser checkpoint (Embedder state dict)")
     parser.add_argument("--detector", required=True, help="detector checkpoint (CornerNet state dict)")
-    parser.add_argument("--version", help="bundle name under data/bundles (default: <today>-<checkpoint run name>)")
+    parser.add_argument("--version", help="bundle name under data/bundles (default: <UTC timestamp>-<checkpoint run name>)")
     parser.add_argument("--out", help="bundle directory (overrides --version)")
+    parser.add_argument("--force", action="store_true", help="overwrite an existing bundle directory (never one that has been published)")
     parser.add_argument("--frame-penalty", type=float, default=FRAME_PENALTY)
     parser.add_argument("--topk", type=int, default=5)
     parser.add_argument("--gallery-dtype", choices=["f16", "f32"], default="f16", help="storage of the gallery embeddings inside search.onnx")
@@ -214,8 +222,13 @@ def main() -> None:
     args = parser.parse_args()
 
     checkpoint, detector = Path(args.checkpoint), Path(args.detector)
-    version = args.version or f"{datetime.now(UTC):%Y-%m-%d}-{checkpoint.parent.name}"
+    version = args.version or default_version(checkpoint)
     out = Path(args.out) if args.out else BUNDLE_DIR / version
+    if (out / "manifest.json").exists() and not args.force:
+        raise SystemExit(
+            f"{out} already exists; a published version is immutable, so export with a new --version "
+            "(the default now includes the time) or pass --force to overwrite a bundle that was never published"
+        )
     index, det = export_bundle(checkpoint, detector, out, args.frame_penalty, args.topk, args.gallery_dtype)
     if args.verify and not verify(out, index, det, args.verify, args.seed, args.topk):
         raise SystemExit(1)
