@@ -25,6 +25,7 @@ from .data import art_frames, cached_eval_queries, gallery_images, load_arts, to
 from .degrade import PROFILES
 from .detect import FRAME_NAMES, FRAME_PENALTY, frame_penalties
 from .detector import Detector
+from .gallery import printing_index
 from .hashing import hamming_topk, hash_images
 from .model import Embedder, PretrainedBaseline, describe_device, pick_device
 from .real import load_labels, real_detector_queries, real_eval_queries
@@ -164,12 +165,12 @@ def main() -> None:
     if args.real and args.detector:
         profile = f"real+{'classical' if args.detector == 'classical' else 'detector'}"
         locate = classical_locate if args.detector == "classical" else Detector(args.detector).locate
-        queries, targets, infos = real_detector_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)}, locate)
+        queries, targets, infos = real_detector_queries(load_labels("eval"), printing_index(arts), locate)
         per_query = 2  # both orientations; which one counts is decided below
         learned_up = args.detector != "classical"  # the learned detector orders the quad upright itself
     elif args.real:
         profile = "real"
-        queries, targets, infos = real_eval_queries(load_labels("eval"), {a["id"]: i for i, a in enumerate(arts)})
+        queries, targets, infos = real_eval_queries(load_labels("eval"), printing_index(arts))
     else:
         profile = args.profile
         queries, targets, infos = cached_eval_queries(arts, per_art=args.per_art, profile=args.profile)

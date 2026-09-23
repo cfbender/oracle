@@ -10,6 +10,7 @@ import torch
 from .data import art_frames, gallery_images, load_arts
 from .detect import FRAME_NAMES, FRAME_PENALTY, frame_penalties
 from .evaluate import embed_images
+from .gallery import gallery_fingerprint, printing_index
 from .model import Embedder
 
 
@@ -30,9 +31,9 @@ class ArtIndex:
         self.model = Embedder(pretrained=False).eval()
         self.model.load_state_dict(torch.load(self.checkpoint, map_location="cpu"))
         self.arts = load_arts()
-        self.by_id = {a["id"]: i for i, a in enumerate(self.arts)}
+        self.by_id = printing_index(self.arts)
         self.frames = art_frames(self.arts)
-        cache = self.checkpoint.with_name(f"{self.checkpoint.stem}-gallery-{len(self.arts)}-{int(self.checkpoint.stat().st_mtime)}.npy")
+        cache = self.checkpoint.with_name(f"{self.checkpoint.stem}-gallery-{gallery_fingerprint(self.arts)}-{int(self.checkpoint.stat().st_mtime)}.npy")
         if cache.exists():
             self.embeddings = np.load(cache)
         else:

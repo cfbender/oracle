@@ -1,14 +1,14 @@
-"""Fetch Scryfall unique-artwork metadata and download a deterministic sample of art crops.
+"""Fetch all Scryfall printings, group by illustration, and download representative crops.
 
 Usage:
     uv run python -m cardid.scryfall --train 5000 --eval 1000   # 6k sample (~25 min at 10 req/s)
     uv run python -m cardid.scryfall --all                       # then everything else as train
     uv run python -m cardid.scryfall --cards 3000                # full-card images for the detector
-    uv run python -m cardid.scryfall --metadata                  # backfill layout/collector_number into an older arts.json
+    uv run python -m cardid.scryfall --metadata                  # refresh metadata/printing siblings without downloading art
 
 Writes:
-    data/unique-artwork.jsonl.gz   raw bulk file
-    data/arts.json                 entries: [{id, oracle_id, name, set, layout, collector_number, face, lang, split, url}]
+    data/all-cards.jsonl.gz        raw bulk file (all languages)
+    data/arts.json                 artwork rows with illustration_id, printing siblings, split and crop URL
     data/art/<id>.jpg              art_crop images
     data/cards/<id>.jpg            `normal` full-card images (488x680) of a random subset
 """
@@ -48,7 +48,7 @@ def download_bulk(client: httpx.Client, dest: Path) -> Path:
     if dest.exists():
         return dest
     meta = client.get(BULK_URL).raise_for_status().json()
-    entry = next(e for e in meta["data"] if e["type"] == "unique_artwork")
+    entry = next(e for e in meta["data"] if e["type"] == "all_cards")
     with client.stream("GET", entry["jsonl_download_uri"]) as r:
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0))
@@ -73,27 +73,51 @@ def art_faces(card: dict) -> list[tuple[int, dict]]:
 
 
 def usable_entries(bulk: Path) -> list[dict]:
-    entries = []
+    groups = {}
     with gzip.open(bulk, "rt", encoding="utf-8") as f:
         for line in f:
             card = json.loads(line)
-            if usable(card):
-                for face_index, face in art_faces(card):
-                    entries.append(
-                        {
-                            "id": card["id"] if face_index == 0 else f"{card['id']}-{face_index}",
-                            "oracle_id": card.get("oracle_id") or face.get("oracle_id"),
-                            "name": face["name"],
-                            "set": card["set"],
-                            "layout": card["layout"],
-                            "collector_number": card["collector_number"],
-                            "face": face_index,
-                            "lang": card["lang"],
-                            "url": face["image_uris"]["art_crop"],
-                        }
-                    )
-    print(f"{len(entries)} usable unique artworks in bulk file")
+            if "paper" not in card.get("games", []) or card.get("digital", False):
+                continue
+            layout = card.get("layout")
+            faces = card.get("card_faces", []) if layout in FACE_LAYOUTS else [card] if layout in ART_LAYOUTS else []
+            for face_index, face in enumerate(faces):
+                printing = {
+                    "id": card["id"] if face_index == 0 else f"{card['id']}-{face_index}",
+                    "name": face["name"],
+                    "set": card["set"],
+                    "layout": layout,
+                    "collector_number": card["collector_number"],
+                    "face": face_index,
+                    "lang": card["lang"],
+                    "border_color": card.get("border_color"),
+                    "scryfall_frame": card.get("frame"),
+                    "frame_effects": card.get("frame_effects", []),
+                    "promo": card.get("promo", False),
+                }
+                illustration = face.get("illustration_id") or printing["id"]
+                group = groups.setdefault(illustration, {"printings": [], "art": None})
+                group["printings"].append(printing)
+                url = (face.get("image_uris") or {}).get("art_crop")
+                if url and card.get("image_status") in ("highres_scan", "lowres"):
+                    art = {**printing, "illustration_id": illustration, "oracle_id": card.get("oracle_id") or face.get("oracle_id"), "url": url}
+                    if group["art"] is None or printing_order(art) < printing_order(group["art"]):
+                        group["art"] = art
+    entries = [dict(g["art"], printings=sorted(g["printings"], key=printing_order)) for g in groups.values() if g["art"] is not None]
+    print(f"{len(entries)} distinct artworks; {sum(len(e['printings']) for e in entries)} selectable paper printing faces")
     return entries
+
+
+def printing_order(printing: dict) -> tuple:
+    """Prefer ordinary English non-promo scans for new arts; never replace an existing crop."""
+    return (
+        printing["lang"] != "en",
+        bool({"extendedart", "showcase"}.intersection(printing.get("frame_effects", []))) or printing.get("border_color") == "borderless",
+        printing.get("promo", False),
+        printing["set"],
+        printing["collector_number"],
+        printing["id"],
+    )
 
 
 def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> list[dict]:
@@ -106,7 +130,7 @@ def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> li
     return picked
 
 
-METADATA_FIELDS = ("layout", "collector_number", "face", "lang")
+METADATA_FIELDS = ("layout", "collector_number", "face", "lang", "illustration_id")
 
 
 def add_metadata(arts: list[dict], entries: list[dict]) -> int:
@@ -114,22 +138,40 @@ def add_metadata(arts: list[dict], entries: list[dict]) -> int:
     how many entries changed. The recogniser needs `layout` to tell a saga's right-half art
     from a class or case card's left-half art (`detect.frame_of`); the capture tool's search
     shows and matches `collector_number` to pick one of a set's many Forests."""
-    by_id = {e["id"]: e for e in entries}
-    changed = 0
+    by_id = {p["id"]: (e, p) for e in entries for p in e["printings"]}
+    changed = set()
     for a in arts:
-        e = by_id.get(a["id"])
-        missing = [f for f in METADATA_FIELDS if f not in a and e and f in e]
-        for f in missing:
-            a[f] = e[f]
-        changed += bool(missing)
-    return changed
+        match = by_id.get(a["id"])
+        if not match:
+            continue
+        e, printing = match
+        before = dict(a)
+        metadata = {**printing, "illustration_id": e["illustration_id"]}
+        for field in METADATA_FIELDS:
+            if field not in a:
+                a[field] = metadata[field]
+        a["printings"] = e["printings"]
+        if a != before:
+            changed.add(a["id"])
+    # Old unique_artwork exports can repeat a reverse illustration. Keep every persisted
+    # ID/split, but embed only one row; prefer a held-out row to avoid train/eval leakage.
+    representatives = {}
+    for a in sorted(arts, key=lambda a: a["split"] != "eval"):
+        key = a.get("illustration_id", a["id"])
+        representative = representatives.setdefault(key, a["id"])
+        if a["id"] != representative:
+            if a.get("alias_of") != representative:
+                changed.add(a["id"])
+            a["alias_of"] = representative
+    return len(changed)
 
 
 def extend_to_all(existing: list[dict], entries: list[dict]) -> list[dict]:
     """Keep an existing sample and its splits (so evaluations stay comparable) and add every
     other usable artwork as training data."""
-    known = {e["id"] for e in existing}
-    added = [dict(e, split="train") for e in entries if e["id"] not in known]
+    add_metadata(existing, entries)
+    known = {e.get("illustration_id", e["id"]) for e in existing}
+    added = [dict(e, split="train") for e in entries if e["illustration_id"] not in known]
     print(f"keeping {len(existing)} sampled arts, adding {len(added)} as train")
     return existing + added
 
@@ -160,7 +202,7 @@ def download_cards(client: httpx.Client, arts: list[dict], n: int, seed: int) ->
     has them). Deterministic in `seed`; rerunning with a larger `n` only adds cards."""
     CARD_DIR.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
-    picked = [a for a in arts if a["split"] == "train"]
+    picked = [a for a in arts if a["split"] == "train" and not a.get("alias_of")]
     rng.shuffle(picked)
     entries = [{"id": a["id"], "card_url": card_image_url(a["url"])} for a in picked[:n]]
     failed = 0
@@ -178,13 +220,13 @@ def main() -> None:
     parser.add_argument("--train", type=int, default=5000)
     parser.add_argument("--eval", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~49k images, ~3 GB)")
+    parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~52k images, ~3 GB)")
     parser.add_argument("--cards", type=int, help="only download full-card images of this many random train arts into data/cards (~100 KB each)")
     parser.add_argument(
         "--metadata",
         "--layouts",
         action="store_true",
-        help="only backfill Scryfall metadata (layout, collector_number, face, lang) into an existing data/arts.json (no image downloads)",
+        help="backfill illustration/face metadata and refresh printing siblings in data/arts.json from the cached bulk (no image downloads)",
     )
     parser.add_argument(
         "--update",
@@ -203,7 +245,7 @@ def main() -> None:
             download_cards(client, json.loads(arts_path.read_text()), args.cards, args.seed)
         return
     with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
-        bulk_path = DATA_DIR / "unique-artwork.jsonl.gz"
+        bulk_path = DATA_DIR / "all-cards.jsonl.gz"
         if args.update and bulk_path.exists():
             bulk_path.replace(bulk_path.with_suffix(".gz.previous"))  # keep one for a diff or a rollback
         bulk = download_bulk(client, bulk_path)
@@ -223,6 +265,7 @@ def main() -> None:
                 arts = extend_to_all(arts, entries)
             add_metadata(arts, entries)
             arts_path.write_text(json.dumps(arts))
+        arts = [a for a in arts if not a.get("alias_of")]
         if args.update:
             # only the new arts need fetching; `fetch_image` skips files that exist anyway, but
             # this keeps a routine refresh from walking 49k files

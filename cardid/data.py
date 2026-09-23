@@ -16,6 +16,7 @@ from tqdm import tqdm
 from . import ART_DIR, DATA_DIR
 from .degrade import PROFILES, Degradation, clean_view, degraded_view, load_rgb
 from .detect import FRAME_NAMES, frame_of
+from .gallery import gallery_fingerprint
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
@@ -23,7 +24,7 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 def load_arts() -> list[dict]:
     arts = json.loads((DATA_DIR / "arts.json").read_text())
-    return [a for a in arts if (ART_DIR / f"{a['id']}.jpg").exists()]
+    return [a for a in arts if not a.get("alias_of") and (ART_DIR / f"{a['id']}.jpg").exists()]
 
 
 def split(arts: list[dict], name: str) -> list[dict]:
@@ -96,7 +97,7 @@ class PairDataset(Dataset):
 
 def gallery_images(arts: list[dict]) -> np.ndarray:
     """Clean 128px views of every art, cached as one uint8 array (49k arts = 2.4 GB)."""
-    cache = DATA_DIR / f"gallery-{len(arts)}.npy"
+    cache = DATA_DIR / f"gallery-{gallery_fingerprint(arts)}.npy"
     if cache.exists():
         return np.load(cache, mmap_mode="r")
     # cv2 releases the GIL, so threads give a near-linear speedup on the JPEG decode.
@@ -127,7 +128,7 @@ def build_eval_queries(arts: list[dict], gallery_index: dict[str, int], per_art:
 def cached_eval_queries(arts_all: list[dict], per_art: int = 3, seed: int = 2024, profile: str = "harsh"):
     """Gallery = every downloaded art (clean); queries = degraded eval-split arts. Cached on disk."""
     suffix = "" if profile == "harsh" else f"-{profile}"
-    cache = DATA_DIR / f"eval-queries-{per_art}-{seed}{suffix}.npz"
+    cache = DATA_DIR / f"eval-queries-{gallery_fingerprint(arts_all)}-{per_art}-{seed}{suffix}.npz"
     gallery_index = {a["id"]: i for i, a in enumerate(arts_all)}
     if cache.exists():
         z = np.load(cache, allow_pickle=True)

@@ -19,7 +19,7 @@ import numpy as np
 from PIL import Image
 
 from .corrections import latest_labels, merge, pull
-from .nightly import fingerprint, publish_allowed, run
+from .nightly import fingerprint, publish_allowed, run, score
 
 CID = "00000000-0000-0000-0000-000000000001"  # independently known train hash
 LABEL = "11111111-1111-1111-1111-111111111111"
@@ -74,15 +74,46 @@ class CorrectionsTest(unittest.TestCase):
         Image.new("RGB", (137, 100), "red").save(art_dir / f"{LABEL}-1.jpg")
         with patch.object(real, "REAL_DIR", self.real), patch.object(real, "LABELS", self.real / "labels.jsonl"), patch.object(data, "ART_DIR", art_dir):
             rows = real.load_labels("train")
-            dataset = real.RealDataset(rows, {LABEL: 3, LABEL + "-1": 7}, layouts={LABEL + "-1": "modal_dfc"})
+            dataset = real.RealDataset(rows, [{"id": LABEL}, {"id": LABEL + "-1", "layout": "modal_dfc"}])
             self.assertEqual(len(dataset), 1)
-            self.assertEqual(dataset[0][2], 7)
+            self.assertEqual(dataset[0][2], 1)
             self.assertEqual(dataset.frames[LABEL + "-1"], "modern")
         for label in [LABEL + suffix for suffix in ["-0", "-2", "-01", ":back", "-1/../x", "-1\n"]] + [123]:
             with self.subTest(label=label), self.assertRaises(ValueError):
                 merge({**face, "label": label}, self.jpeg, self.real)
         with self.assertRaises(ValueError):
             merge({**face, "capture_id": CID + "-1"}, self.jpeg, self.real)
+
+    def test_exact_sibling_label_trains_and_scores_against_shared_artwork(self):
+        from . import data, real
+        from .gallery import printing_index
+
+        canonical = "22222222-2222-2222-2222-222222222222-1"
+        sibling = LABEL + "-1"
+        row = {**self.row, "label": sibling, "top1": canonical}
+        self.assertTrue(merge(row, self.jpeg, self.real))
+        saved = latest_labels(self.real)[CID]
+        self.assertEqual(saved["label"], sibling)
+        arts = [{"id": "other-art"}, {"id": canonical, "layout": "modal_dfc", "printings": [{"id": canonical}, {"id": sibling}]}]
+        art_dir = self.root / "art"
+        art_dir.mkdir()
+        Image.new("RGB", (137, 100), "red").save(art_dir / f"{canonical}.jpg")
+        # No JPEG named after the sibling: using the raw correction label as a filename fails.
+        with patch.object(real, "REAL_DIR", self.real), patch.object(data, "ART_DIR", art_dir):
+            dataset = real.RealDataset([saved], arts)
+            self.assertEqual(dataset[0][2], 1)
+            self.assertEqual(dataset.frames[sibling], "modern")
+            self.assertGreater(float(dataset[0][0][0].mean()), 2)
+            _, targets, _ = real.real_eval_queries([saved], printing_index(arts))
+            self.assertEqual(targets.tolist(), [1])
+        with patch("cardid.bundle.Bundle") as bundle:
+            bundle.return_value.arts = arts
+            bundle.return_value.identify.return_value = {"results": [{"id": canonical}]}
+            self.assertEqual(score(self.root, [saved], self.real)["correct"], 1)
+            bundle.return_value.identify.return_value = {"results": [{"id": "other-art"}]}
+            self.assertEqual(score(self.root, [saved], self.real)["correct"], 0)
+            with self.assertRaisesRegex(SystemExit, "held-out labels missing"):
+                score(self.root, [dict(saved, label="unknown")], self.real)
 
     def test_missing_or_degenerate_quad_stays_pending(self):
         for quad in [None, [[1, 1]] * 4, [[1, 1], [50, 50], [1, 50], [50, 1]]]:

@@ -6,7 +6,9 @@ plus the gallery index, see [Shipping](#shipping-export-publish-refresh)) that t
 
 The recognizer is a metric-learning CNN: a MobileNetV3-Small backbone maps the art box of a
 card to a 128-d unit vector, and identification is cosine nearest-neighbor against one vector
-per Scryfall unique artwork (~49k). Adding a set means embedding its art, not retraining.
+per distinct Scryfall illustration (~52k). Each artwork carries its paper printing choices;
+reprints and translations do not add duplicate embeddings. Adding a set means embedding
+its new art, not retraining.
 
 Scryfall's `art_crop` is a fixed template per card frame, so the query side cuts the same
 templates out of the warped card: modern (0.08–0.92 wide from 0.115 down), old 1993/1997
@@ -38,26 +40,53 @@ torch again.
 
 ## Full catalog (bigger machine)
 
-The 6k sample is enough to compare methods; the production gallery is ~49k artworks, which
+The 6k sample is enough to compare methods; the full gallery is ~52k artworks, which
 is a harder retrieval problem. On a machine with the cores/RAM for it:
 
 ```sh
-uv run python -m cardid.scryfall --all              # +43k art crops as train, ~80 min at 10 req/s
-uv run python -m cardid.scryfall --metadata         # backfill layout/collector_number/face/lang (no image downloads)
+uv run python -m cardid.scryfall --all              # remaining distinct art crops as train; existing JPEGs are reused
+uv run python -m cardid.scryfall --metadata         # backfill face/lang/illustration and refresh printing siblings (no image downloads)
 uv run python -m cardid.train --epochs 16 --batch 256 --run full   # workers/threads default to the core count
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --profile realistic
 ```
 
-The eval split stays the same 1,000 arts, so numbers are comparable with the sample runs;
-the gallery grows to every downloaded art. First `gallery_images` call decodes all JPEGs
-(a few minutes) and caches `data/gallery-<n>.npy` (2.4 GB) for later runs.
+The sampled eval split is preserved while the gallery grows to every downloaded art;
+legacy duplicate illustrations are handled as described below. First `gallery_images` call decodes all JPEGs
+(a few minutes) and caches `data/gallery-<fingerprint>.npy` for later runs. Pixel, embedding,
+and eval-query caches include gallery IDs/order/splits, so a deduplication cannot reuse stale
+targets. Older count-only caches can be removed after migration.
 
-### Gallery coverage and face IDs
+### Gallery coverage, printings and face IDs
 
-The unique-artwork bulk is accepted in **any language**, including Japanese-only alternate
-art such as SOA #102 Abrade. Entries must still be paper, non-digital, have `highres_scan`
-or `lowres` image status, and have an art crop. This changes the recognition gallery only,
-not the app's English printing picker or identity catalog.
+The **all_cards** bulk (`data/all-cards.jsonl.gz`) includes every language, including
+Japanese-only alternate art such as SOA #102 Abrade. `unique_artwork` chose just one printing
+per illustration, sometimes extended/borderless instead of ordinary; `default_cards` still
+omits most translations. Neither supplies every printing choice.
+
+We group paper, non-digital printing faces by `illustration_id` (or the printing face ID
+when Scryfall has no illustration ID). Each group needs at least one `highres_scan`/`lowres`
+art crop. Every supported-layout paper sibling is selectable, even one with a placeholder
+scan, provided that illustration has a good scan elsewhere. Its preview uses Scryfall's
+image for that exact printing, which may itself be a placeholder. Artworks without any
+usable scan remain absent. No English restriction is applied. This changes the webcam
+recognizer's gallery/search, not the separate English-only deck printing picker/catalog.
+
+`printings` holds each sibling's exact ID, face name, set, collector number, language,
+border color, Scryfall frame (`scryfall_frame`), frame effects and promo flag. Detector
+`frame` remains separate. The picker expands an artwork into printing choices; both
+searches accept `set:3ed`, `#40`, `lang:en` (English results sort first). Identical art cannot
+identify the printing or language automatically: the numbered match is the existing
+representative and the user chooses a sibling. New artworks prefer ordinary English,
+non-promo scans; existing representatives and their crops are never replaced.
+Some illustrations also span different names (Killbots, renamed tokens and misprints);
+those choices explicitly show their own names, and searches use each printing's name.
+
+In the checked bulk snapshot, Sol Talisman has 29 printing choices (4 English), Essence
+Channeler 12 (4 English), and Nettlecyst 32 (6 English), each still one artwork. Revised
+(`3ed`) grows from 2 choices to all 1,223 records (306 English), Unlimited from 0 to 302.
+Revised Serra Angel, Lightning Bolt and Llanowar Elves each have all four language printings.
+Early-core paper/digital filters reject none: 895 Revised records have placeholder scans,
+but share scanned art and are now selectable. Alpha/Beta are included too.
 
 - Single-art layouts: normal, leveler, saga, class, case, mutate, prototype, token,
   adventure, **prepare**, and **meld**. Prepare shares a top art box like adventure:
@@ -79,10 +108,21 @@ classified from **its own crop aspect**: ordinary transform/MDFC backs use `mode
 extended/showcase, saga and token faces retain the corresponding existing frame. Inclusion
 does not guarantee webcam accuracy for every unusual frame treatment.
 
+An old gallery can contain duplicate illustrations (for example the same reverse side
+paired with different fronts). Migration keeps every persisted row/ID/split, marks
+duplicates with `alias_of`, and loads/exports one embedding row per illustration. A held-out
+row wins over a training row so that shared artwork cannot leak into synthetic training.
+All old and sibling printing labels map to the retained row. Exported indices can therefore
+shift once during migration; every graph and `arts.json` is rebuilt together, never mixed
+across versions. On the checked snapshot, 51,158 old face rows become 52,041 artwork rows
+with 533,015 selectable printing faces. This is metadata growth, not 533k art downloads.
+
 The API accepts the same gallery IDs for details and rulings, rejects malformed suffixes,
 and keeps face-aware cache keys. Details select the face's image and rules; rulings are
 fetched from the base card. Correction labels retain the suffix through export/import into
-`data/real`. Only capture IDs remain plain UUIDs.
+`data/real`. Exact sibling labels are preserved; real training opens the representative's
+JPEG and real/nightly evaluation scores artwork identity, not whether an indistinguishable
+printing was guessed. Only capture IDs remain plain UUIDs.
 
 ## GPU training (AMD RX 9070 XT / ROCm)
 
@@ -340,11 +380,14 @@ override with `--version` or `--out`):
 | `detector.onnx` | uint8 RGBA 256×256 window → card `quad` (4×2, window px, printed order), `up` (2), `centre` (2), `short` side. Runs the four 90° rotations, corner snapping, orientation vote and pose inside the graph. |
 | `embed.onnx` | uint8 RGBA scene (any H×W) + quad → 6×128 embeddings, one per frame cut (`detect.FRAMES`). The projective warp is a `GridSample`, so no OpenCV is needed in the browser. |
 | `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores. The gallery (f16 by default, `--gallery-dtype f32`) and the frame prior (`--frame-penalty`, default 0.02) are baked in; `--topk` defaults to 5. |
-| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`. |
+| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`, `illustration_id`, nested `printings`. |
 | `manifest.json` | version, checkpoint sha256s, gallery size, every constant the glue code needs (scene 640, detector input 256, refine fill 0.6 / min side 64, card 250×350, art input 128, frame names, opset 17), per-file bytes + sha256. |
 | `SHA256SUMS` | what `publish` and the server verify. |
 
-Sizes at 49k arts: detector 12.6 MB, embed 5.1 MB, search ≈13 MB (f16), arts.json ≈7 MB.
+Graph sizes at 49k arts: detector 12.6 MB, embed 5.1 MB, search ≈13 MB (f16).
+All-language printing metadata is much larger than the former ~7 MB flat gallery; allow
+roughly 140 MB for uncompressed `arts.json` and ~393 MB for the compressed all-card bulk.
+The browser caches bundle files by version; the search graph still has only ~52k rows.
 
 `export` ends with a parity check (`--verify N`, default 64, `0` to skip): it renders N
 synthetic scenes, runs the torch pipeline and the bundle through onnxruntime on each, and fails
@@ -375,8 +418,10 @@ uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector 
 uv run python -m cardid.publish data/bundles/<version> --to nuc:/srv/the-gathering/cardid
 ```
 
-`--update` keeps the previous bulk file as `unique-artwork.jsonl.gz.previous` and leaves existing art IDs
-and gallery order alone, so the new bundle differs only by appended rows. Retrain (`train
+`--update` keeps the previous bulk file as `all-cards.jsonl.gz.previous`, refreshes sibling
+metadata, preserves existing art IDs and splits, and appends new illustrations as train.
+The one-time duplicate-illustration migration described above removes aliases from the
+exported index, not from `data/arts.json`. Retrain (`train
 --real`) only when real-capture accuracy drifts, e.g. a new frame style the six cuts miss.
 
 ### Apply the expanded gallery to an existing deployment
@@ -394,10 +439,13 @@ uv run python -m cardid.publish "data/bundles/$version" --to nuc:/srv/the-gather
 Use your currently published checkpoint/detector paths if different (`CARDID_CHECKPOINT`,
 `CARDID_DETECTOR`, and `CARDID_PUBLISH_TO` in the nightly environment name these settings;
 after a successful nightly run, its resume checkpoint is in `data/nightly/state.json`).
-`--update` re-fetches metadata, backfills missing metadata on existing rows, appends newly
-usable language/layout/face entries as train, and downloads only missing art files. Check
-its failed-download count and rerun if needed before exporting. `--metadata` alone never
-adds entries or downloads art. Export's parity check, manifest and checksums are unchanged.
+`--update` re-fetches the all-language metadata, backfills existing rows, refreshes printing
+siblings, appends newly usable illustrations as train, and downloads only missing art files.
+**No full art re-download or retraining is needed**: existing IDs/JPEGs are reused even
+when a regular printing is now preferred for fresh galleries. Check its failed-download
+count and rerun if needed before exporting. `--metadata` alone never adds artworks or
+downloads art, but does refresh siblings from its cached bulk file.
+Export's parity check, manifest and checksums are unchanged.
 
 ### Training from in-app corrections
 

@@ -23,6 +23,7 @@ from . import DATA_DIR
 from .data import art_path, to_tensor
 from .degrade import INPUT_SIZE, clean_view, load_rgb
 from .detect import CARD_H, CARD_W, art_crops, frame_box, frame_of
+from .gallery import printing_index
 
 REAL_DIR = DATA_DIR / "real"
 LABELS = REAL_DIR / "labels.jsonl"
@@ -88,8 +89,8 @@ class RealDataset(Dataset):
     `repeat` oversamples the (small) real set so it is a meaningful share of each epoch.
     """
 
-    def __init__(self, rows: list[dict], art_index: dict[str, int], repeat: int = 1, seed: int = 1, layouts: dict[str, str] | None = None):
-        layouts = layouts or {}
+    def __init__(self, rows: list[dict], arts: list[dict], repeat: int = 1, seed: int = 1):
+        art_index = printing_index(arts)
         self.rows = [r for r in rows if r["label"] in art_index]
         self.art_index = art_index
         self.repeat = repeat
@@ -98,9 +99,10 @@ class RealDataset(Dataset):
         self.cards = [load_rgb(REAL_DIR / r["capture_id"] / "card.png") for r in self.rows]
         self.cleans, self.frames = {}, {}
         for r in self.rows:
-            art = load_rgb(art_path({"id": r["label"]}))
+            entry = arts[art_index[r["label"]]]
+            art = load_rgb(art_path(entry))
             self.cleans[r["label"]] = clean_view(art)
-            self.frames[r["label"]] = frame_of(art.shape[1] / art.shape[0], layouts.get(r["label"]))
+            self.frames[r["label"]] = frame_of(art.shape[1] / art.shape[0], entry.get("layout"))
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch

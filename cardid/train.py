@@ -27,6 +27,7 @@ from tqdm import tqdm
 from . import RUNS_DIR
 from .data import PairDataset, art_frames, cached_eval_queries, gallery_images, load_arts, split, worker_init
 from .evaluate import cosine_topk, embed_images, frame_topk
+from .gallery import printing_index
 from .model import ArcFaceHead, Embedder, describe_device, gpu, info_nce, pick_device
 from .real import RealDataset, load_labels, real_eval_queries
 
@@ -91,9 +92,7 @@ def main() -> None:
     real_sets = []
     if args.real:
         # Labels are only consumed by ArcFace, which --real excludes, so index over every art.
-        real_train = RealDataset(
-            load_labels("train"), {a["id"]: i for i, a in enumerate(arts)}, repeat=args.real_repeat, layouts={a["id"]: a.get("layout") for a in arts}
-        )
+        real_train = RealDataset(load_labels("train"), arts, repeat=args.real_repeat)
         real_sets.append(real_train)
         print(f"real captures: {len(real_train.rows)} train x{args.real_repeat}, {len(load_labels('eval'))} eval")
         train_set = ConcatDataset([dataset, real_train])
@@ -115,7 +114,7 @@ def main() -> None:
     queries, targets = queries[sel], targets[sel]
     frames = None
     if args.real:
-        gallery_index = {a["id"]: i for i, a in enumerate(arts)}
+        gallery_index = printing_index(arts)
         queries, targets, _ = real_eval_queries(load_labels("eval"), gallery_index)
         frames = art_frames(arts)
         print(f"selecting best checkpoint by top-1 on {len(queries)} held-out real captures")

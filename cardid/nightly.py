@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import DATA_DIR, ML_DIR
 from .corrections import REAL, atomic_json, latest_labels, pull
+from .gallery import printing_index
 
 
 def fingerprint(rows: list[dict]) -> str:
@@ -44,15 +45,16 @@ def score(bundle_path: Path, rows: list[dict], real: Path) -> dict:
     from .degrade import load_rgb
 
     bundle = Bundle(bundle_path)
-    gallery = {art["id"] for art in bundle.arts}
-    missing = {r["label"] for r in rows} - gallery
+    gallery = printing_index(bundle.arts)
+    missing = {r["label"] for r in rows} - gallery.keys()
     if missing:
         raise SystemExit(f"refusing incomparable evaluation: {len(missing)} held-out labels missing from {bundle_path}")
     correct = 0
     for row in rows:
         crop = load_rgb(real / row["capture_id"] / "crop.jpg")
         click = tuple(row.get("click") or (crop.shape[1] / 2, crop.shape[0] / 2))
-        correct += bundle.identify(crop, click)["results"][0]["id"] == row["label"]
+        prediction = bundle.identify(crop, click)["results"][0]["id"]
+        correct += gallery[prediction] == gallery[row["label"]]
     return {"correct": correct, "count": len(rows), "top1": correct / len(rows), "captures": fingerprint(rows)}
 
 

@@ -158,8 +158,10 @@ class Session:
     def stats(self) -> dict:
         rows = load_labels()
         n = len(rows)
-        top1 = sum(r["top5"][0] == r["label"] for r in rows)
-        top5 = sum(r["label"] in r["top5"] for r in rows)
+        by_id = self.index.by_id
+        ranked = [[by_id.get(p) for p in r.get("top5", [r.get("top1")])] for r in rows]
+        top1 = sum(r["label"] in by_id and predictions[0] == by_id[r["label"]] for r, predictions in zip(rows, ranked, strict=True))
+        top5 = sum(r["label"] in by_id and by_id[r["label"]] in predictions for r, predictions in zip(rows, ranked, strict=True))
         judged = [r["up_correct"] for r in rows if "up_correct" in r]
         return {
             "labeled": n,
@@ -179,14 +181,15 @@ class Session:
         words = q.strip().lower().split()
         if not words:
             return []
-        sets = {a["set"] for a in self.index.arts}
+        printings = [p for a in self.index.arts for p in a.get("printings", [a])]
+        sets = {a["set"] for a in printings}
         set_words = [w for w in words if w in sets]
         numbers = [w.lstrip("#") for w in words if w not in sets and (w.startswith("#") or w.isdigit())]
         name_words = [w for w in words if w not in sets and w.lstrip("#") not in numbers]
         # a word that is both a set code and part of the name ("war", "fin") keeps the name meaning too
         hits = [
             a
-            for a in self.index.arts
+            for a in printings
             if (not set_words or a["set"] in set_words or all(w in a["name"].lower() for w in words))
             and all(w in a["name"].lower() for w in name_words)
             and all(str(a.get("collector_number", "")).lower() == n for n in numbers)
@@ -249,6 +252,8 @@ def make_handler(session: Session):
                 self.send_bytes(PAGE.read_bytes(), "text/html; charset=utf-8")
             elif url.path.startswith("/art/"):
                 art_id = url.path[len("/art/") :].removesuffix(".jpg")
+                if art_id in session.index.by_id:
+                    art_id = session.index.arts[session.index.by_id[art_id]]["id"]
                 p = ART_DIR / f"{art_id}.jpg"
                 if art_id in session.index.by_id and p.exists():
                     self.send_bytes(p.read_bytes(), "image/jpeg")

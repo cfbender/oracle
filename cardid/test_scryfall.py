@@ -168,3 +168,74 @@ class ScryfallTest(unittest.TestCase):
         self.assertEqual(frame_of(0.88, "double_faced_token"), "tall")
         self.assertEqual(frame_of(0.415, "class"), "left")
         self.assertEqual(frame_of(0.415, "transform"), "right")
+
+    def test_siblings_share_one_crop_but_keep_printing_treatments_and_languages(self):
+        extended = dict(ABRADE, illustration_id="shared-art", lang="en", frame_effects=["extendedart"], border_color="black")
+        # A normal legendary crown is not a special treatment. Its higher collector number
+        # must not cause the lexically earlier extended-art scan to win.
+        regular = dict(extended, id="regular", collector_number="200", frame_effects=["legendary"], frame="2015")
+        japanese = dict(regular, id="japanese", lang="ja")
+        promo = dict(regular, id="promo", promo=True, set="psoa")
+        pending = dict(regular, id="pending-scan", image_status="missing", image_uris={})
+        orphan = dict(pending, id="no-art", illustration_id="unscanned-art")
+        entries = self.entries([extended, japanese, promo, pending, regular, orphan, dict(regular, id="digital", digital=True)])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["id"], "regular")
+        self.assertEqual(entries[0]["illustration_id"], "shared-art")
+        siblings = {p["id"]: p for p in entries[0]["printings"]}
+        self.assertEqual(set(siblings), {extended["id"], "regular", "japanese", "promo", "pending-scan"})
+        self.assertEqual(siblings[extended["id"]]["frame_effects"], ["extendedart"])
+        self.assertEqual(siblings["regular"]["scryfall_frame"], "2015")
+        self.assertEqual(siblings["japanese"]["lang"], "ja")
+        self.assertTrue(siblings["promo"]["promo"])
+        self.assertNotIn("url", siblings["regular"])
+        # Bulk order cannot switch which representative a fresh gallery downloads.
+        self.assertEqual(entries, self.entries([regular, promo, japanese, extended, pending]))
+
+    def test_existing_extended_id_crop_and_split_survive_new_regular_printing(self):
+        extended = dict(ABRADE, illustration_id="shared-art", lang="en", frame_effects=["extendedart"])
+        original = self.entries([extended])[0]
+        original.pop("illustration_id")
+        original.pop("printings")
+        original["split"] = "eval"
+        existing = [dict(original)]
+        entries = self.entries([extended, dict(extended, id="regular", frame_effects=[]), STUDIOUS])
+        updated = scryfall.extend_to_all(existing, entries)
+        self.assertEqual({k: updated[0][k] for k in original}, original)
+        self.assertEqual(len(updated), 2)
+        self.assertEqual(updated[1]["id"], STUDIOUS["id"])
+        self.assertEqual(updated[1]["split"], "train")
+        self.assertEqual(len(updated[0]["printings"]), 2)
+        self.assertEqual(scryfall.extend_to_all(updated, entries), updated)
+
+    def test_repeated_reverse_art_preserves_ids_and_splits_but_only_embeds_eval_row(self):
+        from . import data
+        from .gallery import printing_index
+
+        first = dict(JADZI, card_faces=[dict(face, illustration_id=f"art-{i}") for i, face in enumerate(JADZI["card_faces"])])
+        second = dict(first, id="another-printing", card_faces=[dict(first["card_faces"][0], illustration_id="different-front"), first["card_faces"][1]])
+        entries = self.entries([first, second])
+        self.assertEqual(len(entries), 3)  # two front artworks, one shared back
+        existing = [{"id": first["id"] + "-1", "split": "train"}, {"id": second["id"] + "-1", "split": "eval"}]
+        scryfall.add_metadata(existing, entries)
+        self.assertEqual([(a["id"], a["split"]) for a in existing], [(first["id"] + "-1", "train"), (second["id"] + "-1", "eval")])
+        self.assertEqual(existing[0]["alias_of"], second["id"] + "-1")
+        self.assertNotIn("alias_of", existing[1])
+        (self.root / "arts.json").write_text(json.dumps(existing))
+        for a in existing:
+            (self.root / f"{a['id']}.jpg").touch()
+        with patch.object(data, "DATA_DIR", self.root), patch.object(data, "ART_DIR", self.root):
+            canonical = data.load_arts()
+        self.assertEqual(canonical, [existing[1]])
+        self.assertEqual(printing_index(canonical), {first["id"] + "-1": 0, second["id"] + "-1": 0})
+        self.assertEqual(scryfall.add_metadata(existing, entries), 0)
+
+    def test_gallery_cache_identity_includes_order_membership_and_split_not_siblings(self):
+        from .gallery import gallery_fingerprint
+
+        arts = [{"id": "a", "split": "train"}, {"id": "b", "split": "eval"}]
+        digest = gallery_fingerprint(arts)
+        self.assertNotEqual(digest, gallery_fingerprint(arts[::-1]))
+        self.assertNotEqual(digest, gallery_fingerprint([arts[0], {"id": "c", "split": "eval"}]))
+        self.assertNotEqual(digest, gallery_fingerprint([arts[0], {"id": "b", "split": "train"}]))
+        self.assertEqual(digest, gallery_fingerprint([dict(a, printings=[{"id": "new"}]) for a in arts]))
