@@ -28,6 +28,7 @@ import tempfile
 from pathlib import Path
 
 from .export import SUMS, sha256, write_sums
+from .workflow import remote_target
 
 REQUIRED = ("manifest.json", "detector.onnx", "embed.onnx", "search.onnx", "arts.json")
 
@@ -152,9 +153,9 @@ def main() -> None:
     bundle = Path(args.bundle).resolve()
     manifest = check_bundle(bundle)
     print(f"{bundle.name}: {manifest['gallery']['arts']} arts, {sum(f['bytes'] for f in manifest['files'].values()) / 1e6:.1f} MB")
-    if ":" in args.to and not Path(args.to.split(":", 1)[0]).exists():
-        host, dest = args.to.split(":", 1)
-        publish_remote(bundle, host, dest, args.keep or None, args.expected_current)
+    remote = remote_target(args.to)
+    if remote:
+        publish_remote(bundle, *remote, args.keep or None, args.expected_current)
     else:
         publish_local(bundle, Path(args.to), args.keep or None, args.expected_current)
 

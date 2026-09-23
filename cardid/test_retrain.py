@@ -51,6 +51,8 @@ class RetrainTest(unittest.TestCase):
         self.commands = []
         self.last_only = False
         self.fail_publish = False
+        self.ssh_exit = 0
+        self.manifest_exit = 0
 
     def write(self, path, content):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,9 +64,14 @@ class RetrainTest(unittest.TestCase):
 
     def fake_runner(self, *cmd):
         self.commands.append(cmd)
-        if cmd[0] == "rsync":
+        if cmd[0] == "ssh":
+            if self.ssh_exit:
+                raise subprocess.CalledProcessError(self.ssh_exit, cmd)
+        elif cmd[0] == "rsync":
             dest = Path(cmd[-1])
             if cmd[-2].endswith("manifest.json"):
+                if self.manifest_exit:
+                    raise subprocess.CalledProcessError(self.manifest_exit, cmd)
                 shutil.copyfile(self.manifest_path, dest)
             else:
                 shutil.copytree(self.bundle, dest)
@@ -182,9 +189,10 @@ class RetrainTest(unittest.TestCase):
         checkpoint = str(self.runs / "retrain-test" / "best.pt")
         # Only the temporary rsync output path varies.
         expected = [
+            ("ssh", "desktop", "test -d /cardid"),
             ("python", "-m", "cardid.corrections", "pull", "--server", "https://example.test"),
             ("python", "-m", "cardid.scryfall", "--update"),
-            ("rsync", "-aL", "--", "desktop:/cardid/current/manifest.json", self.commands[2][-1]),
+            ("rsync", "-aL", "--", "desktop:/cardid/current/manifest.json", self.commands[3][-1]),
             ("python", "-m", "cardid.train", "--resume", str(self.checkpoint), "--epochs", "4", "--run", "retrain-test"),
             ("python", "-m", "cardid.export", "--checkpoint", checkpoint, "--detector", str(self.detector), "--version", "retrain-test", "--verify", "64"),
             ("python", "-m", "cardid.evaluate", "--method", "checkpoint", "--checkpoint", checkpoint, "--profile", "realistic"),
@@ -203,6 +211,50 @@ class RetrainTest(unittest.TestCase):
         self.assertEqual(report["status"], "published")
         state = json.loads((self.data / "nightly" / "state.json").read_text())
         self.assertEqual((state["checkpoint"], state["detector"], state["corrections"]), (checkpoint, str(self.detector), "already-seen"))
+
+    def test_missing_destination_fails_before_pulling(self):
+        self.ssh_exit = 1
+        with self.assertRaisesRegex(SystemExit, "not a directory there"):
+            self.run_pipeline()
+        self.assertEqual(self.commands, [("ssh", "desktop", "test -d /cardid")])
+        self.assertEqual(json.loads((self.data / "retrain" / "retrain-test.json").read_text())["status"], "failed")
+        self.ssh_exit = 255
+        with self.assertRaisesRegex(SystemExit, "ssh connection failed"):
+            retrain.run(self.args(), data=self.data, runner=self.fake_runner, version="retrain-test-2")
+        # Quoted remote paths and local directories are checked the same way.
+        with self.assertRaisesRegex(SystemExit, "is not a directory"):
+            retrain.run(self.args("--to", str(self.root / "absent")), data=self.data, runner=self.fake_runner, version="retrain-test-3")
+        (self.root / "with space").mkdir()
+        retrain.run(self.args("--to", str(self.root / "with space")), data=self.data, runner=self.fake_runner, version="retrain-test-4")
+        self.assertNotIn("ssh", [c[0] for c in self.commands[2:]])
+        self.ssh_exit = 0
+        self.run_pipeline("--to", "desktop:/path with spaces", "--no-publish")
+        self.assertNotIn("ssh", [c[0] for c in self.commands[2:]])
+
+    def test_first_publication_falls_back_without_current_guard(self):
+        # The destination exists but nothing is published there yet: rsync exits 23.
+        self.manifest_exit = 23
+        report = self.run_pipeline()
+        self.assertEqual(report["status"], "published")
+        self.assertFalse(report["baseline_published"])
+        self.assertEqual(report["baseline_source"], str(self.bundle))
+        publish = self.commands[-1]
+        self.assertEqual(publish[2], "cardid.publish")
+        self.assertNotIn("--expected-current", publish)
+        self.assertIn("nothing is published at desktop:/cardid/current yet", self.output.getvalue())
+        self.assertIn("without the concurrent-publish guard", self.output.getvalue())
+        train = next(c for c in self.commands if c[2] == "cardid.train")
+        self.assertEqual(train[train.index("--resume") + 1], str(self.checkpoint))
+
+    def test_unreadable_published_manifest_aborts_unless_no_publish(self):
+        self.manifest_exit = 12
+        with self.assertRaisesRegex(SystemExit, "published manifest unreadable"):
+            self.run_pipeline()
+        self.assertNotIn("cardid.train", [c[2] for c in self.commands if len(c) > 2])
+        report = self.run_pipeline("--no-publish")
+        self.assertEqual(report["status"], "not-published")
+        self.assertFalse(report["baseline_published"])
+        self.assertIn("cardid.evaluate", [c[2] for c in self.commands if len(c) > 2])
 
     def test_detector_last_only_and_real_train_without_eval(self):
         self.real_rows(evaluation=False)
@@ -307,8 +359,10 @@ class RetrainTest(unittest.TestCase):
 
     def test_dry_run_only_reads_manifest_and_prints_conditional_outputs(self):
         report = self.run_pipeline("--dry-run", "--detector-epochs", "2")
-        self.assertEqual(len(self.commands), 1)
-        self.assertEqual(self.commands[0][:4], ("rsync", "-aL", "--", "desktop:/cardid/current/manifest.json"))
+        # Read-only steps still run: the destination preflight and the manifest fetch.
+        self.assertEqual(len(self.commands), 2)
+        self.assertEqual(self.commands[0], ("ssh", "desktop", "test -d /cardid"))
+        self.assertEqual(self.commands[1][:4], ("rsync", "-aL", "--", "desktop:/cardid/current/manifest.json"))
         self.assertFalse((self.runs / "retrain-test").exists())
         self.assertFalse((self.data / "nightly" / "state.json").exists())
         self.assertIn('"$candidate_detector"', self.output.getvalue())

@@ -60,8 +60,14 @@ publication unless `--force`; missing labels, missing baselines, incomparable da
 export parity failures, changed labels or a changed server manifest cannot be forced.
 Without held-out captures, retrain warns and permits publication with **no real accuracy
 guarantee**; synthetic realistic top-1/top-5 are printed on every completed evaluation.
-Use `--no-publish` to inspect results first. A local fallback manifest still supplies the
-`--expected-current` publish guard; if it is not what the server serves, publication refuses.
+Use `--no-publish` to inspect results first. Unless `--no-publish` is set, retrain first checks
+that `CARDID_PUBLISH_TO` is an existing directory (`ssh host test -d`, or a local `is_dir`) and
+aborts before pulling or training if it is not, so a mistyped path fails in seconds rather than
+after training. A missing `current/manifest.json` inside an existing destination means a first
+publication: retrain resumes from the newest local bundle's checkpoints and publishes without
+the `--expected-current` guard (it warns). Any other manifest fetch failure aborts, because
+publication would fail anyway; `--no-publish` still falls back to the local bundle for offline
+experiments.
 
 Each run, including failures and dry runs, writes `data/retrain/<timestamp>.json` with commands,
 selected paths, evaluation/gate results and publication status. Successful publication updates

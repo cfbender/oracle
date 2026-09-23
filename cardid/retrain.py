@@ -14,7 +14,18 @@ from pathlib import Path
 from . import DATA_DIR, ML_DIR
 from .corrections import atomic_json, latest_labels
 from .gallery import printing_index
-from .workflow import command, find_manifest, fingerprint, publish_allowed, resolve_checkpoint, score, sha256, snapshot_bundle, trained_checkpoint
+from .workflow import (
+    check_destination,
+    command,
+    find_manifest,
+    fingerprint,
+    publish_allowed,
+    resolve_checkpoint,
+    score,
+    sha256,
+    snapshot_bundle,
+    trained_checkpoint,
+)
 
 
 def load_env(path: Path) -> None:
@@ -123,15 +134,19 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
         for run_name in (version, version + "-detector"):
             if (data / "runs" / run_name).exists():
                 raise SystemExit(f"refusing to reuse existing run {run_name}")
+        if not args.no_publish:
+            check_destination(args.to, lambda *cmd: execute(*cmd, read_only=True))
         pull = ["python", "-m", "cardid.corrections", "pull"]
         pull += ["--from-dir", str(args.from_dir)] if args.from_dir else ["--server", args.server]
         execute(*pull)
         if args.update_gallery:
             execute("python", "-m", "cardid.scryfall", "--update")
         with tempfile.TemporaryDirectory(prefix="cardid-retrain-") as tmp:
-            path, source = find_manifest(args.to, data / "bundles", Path(tmp), lambda *cmd: execute(*cmd, read_only=True))
+            path, source = find_manifest(args.to, data / "bundles", Path(tmp), lambda *cmd: execute(*cmd, read_only=True), require=not args.no_publish)
             manifest = json.loads(path.read_text()) if path else None
             baseline_hash = sha256(path) if path else None
+            # Only a manifest fetched from the server can guard against a concurrent publish.
+            published = source is not None and args.to is not None and source == args.to.rstrip("/") + "/current"
             checkpoint = resolve_checkpoint(
                 "recogniser",
                 data / "runs",
@@ -146,7 +161,7 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
                 args.detector,
                 hint=Path(os.environ["CARDID_DETECTOR"]) if os.environ.get("CARDID_DETECTOR") else None,
             )
-            report.update(checkpoint=str(checkpoint), detector=str(detector), baseline_source=source, baseline_hash=baseline_hash)
+            report.update(checkpoint=str(checkpoint), detector=str(detector), baseline_source=source, baseline_hash=baseline_hash, baseline_published=published)
             rows = usable_rows(data)
             real_train = train_rows(data, rows)
             eval_rows = [r for r in rows if r["split"] == "eval"]
@@ -217,7 +232,9 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
                 report["status"] = "regressed"
                 raise SystemExit("REFUSED: held-out top-1 regressed; review the report or explicitly use --force")
             else:
-                guard = ["--expected-current", baseline_hash] if baseline_hash else []
+                guard = ["--expected-current", baseline_hash] if published else []
+                if not published:
+                    print("WARNING: no published baseline manifest; publishing without the concurrent-publish guard", flush=True)
                 if args.dry_run and eval_rows:
                     print("DRY RUN: publish only if held-out gate passes (or comparable regression with --force).", flush=True)
                 execute("python", "-m", "cardid.publish", str(bundle), "--to", args.to, *guard)

@@ -70,8 +70,41 @@ def snapshot_bundle(source: str, directory: Path, runner=command) -> tuple[Path,
     return baseline, manifest, sha256(baseline / "manifest.json")
 
 
-def find_manifest(target: str | None, bundles: Path, directory: Path, runner=command) -> tuple[Path | None, str | None]:
-    """Prefer current on the server; local fallback is a hint, never proof of publication."""
+def remote_target(target: str) -> tuple[str, str] | None:
+    """Split [user@]host:/path the same way cardid.publish does; None for a local directory."""
+    if ":" in target and not Path(target.split(":", 1)[0]).exists():
+        host, dest = target.split(":", 1)
+        return host, dest
+    return None
+
+
+def check_destination(target: str, runner=command) -> None:
+    """Refuse before pulling or training when the publish destination is not a directory.
+
+    A mistyped CARDID_PUBLISH_TO would otherwise surface hours later, after training, as a
+    refused publish (remote) or a freshly created directory nothing serves (local)."""
+    remote = remote_target(target)
+    if remote is None:
+        if not Path(target).expanduser().is_dir():
+            raise SystemExit(f"publish destination {target} is not a directory; fix CARDID_PUBLISH_TO or create it for a first publication")
+        return
+    host, dest = remote
+    try:
+        runner("ssh", host, f"test -d {shlex.quote(dest)}")
+    except subprocess.CalledProcessError as error:
+        detail = "ssh connection failed" if error.returncode == 255 else "not a directory there"
+        raise SystemExit(
+            f"publish destination {target}: {detail} (exit {error.returncode}); fix CARDID_PUBLISH_TO or create it for a first publication"
+        ) from None
+
+
+def find_manifest(target: str | None, bundles: Path, directory: Path, runner=command, *, require: bool = False) -> tuple[Path | None, str | None]:
+    """Prefer current on the server; local fallback is a hint, never proof of publication.
+
+    Callers tell the two results apart by the source: `<target>/current` was fetched from the
+    server, anything else is a local bundle directory. With `require`, only a missing
+    `current/manifest.json` (rsync exit 23, first publication) may fall back; a connection or
+    parse failure aborts because publication would fail anyway."""
     if target:
         source = target.rstrip("/") + "/current"
         path = directory / "manifest.json"
@@ -80,7 +113,11 @@ def find_manifest(target: str | None, bundles: Path, directory: Path, runner=com
             json.loads(path.read_text())
             return path, source
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
-            print(f"WARNING: published manifest unavailable ({error}); looking for a local bundle", flush=True)
+            missing = isinstance(error, subprocess.CalledProcessError) and error.returncode == 23
+            if require and not missing:
+                raise SystemExit(f"published manifest unreadable ({error}); fix the connection or use --no-publish") from None
+            reason = f"nothing is published at {source} yet" if missing else str(error)
+            print(f"WARNING: published manifest unavailable ({reason}); looking for a local bundle", flush=True)
     manifests = sorted(bundles.glob("*/manifest.json"), key=lambda p: (p.stat().st_mtime_ns, str(p)), reverse=True)
     if manifests:
         print(f"WARNING: using newest local manifest {manifests[0]}; it may not be published", flush=True)
