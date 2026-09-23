@@ -45,7 +45,7 @@ from .synth import DET_INPUT, SCENE
 BUNDLE_DIR = DATA_DIR / "bundles"
 SUMS = "SHA256SUMS"
 OPSET = 17
-ART_FIELDS = ("id", "name", "set", "collector_number", "layout")
+ART_FIELDS = ("id", "name", "set", "collector_number", "layout", "face", "lang")
 CLEAR_MARGIN = 0.02  # torch top-1 lead over the runner-up above which the bundle must agree
 
 

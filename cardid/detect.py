@@ -56,7 +56,9 @@ def frame_penalties(frames: np.ndarray, penalty: float = FRAME_PENALTY) -> np.nd
 def frame_of(aspect: float, layout: str | None = None) -> str:
     """Frame name for a gallery art from its image aspect (width / height) and, for the
     half-width frames, the Scryfall layout (sagas put the art on the right, class and case
-    cards on the left; without a layout assume saga, they outnumber the others 5:1)."""
+    cards on the left; without a layout assume saga, they outnumber the others 5:1).
+    DFC sides are classified independently: ordinary transform/MDFC backs (~1.37) are
+    modern, not half-width; showcase/extended/token faces still use their own aspect."""
     if aspect < 0.6:
         return "left" if layout in HALF_LEFT_LAYOUTS else "right"
     if aspect < 1.1:

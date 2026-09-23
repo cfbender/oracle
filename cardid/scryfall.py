@@ -8,7 +8,7 @@ Usage:
 
 Writes:
     data/unique-artwork.jsonl.gz   raw bulk file
-    data/arts.json                 sampled entries: [{id, oracle_id, name, set, layout, collector_number, split, url}]
+    data/arts.json                 entries: [{id, oracle_id, name, set, layout, collector_number, face, lang, split, url}]
     data/art/<id>.jpg              art_crop images
     data/cards/<id>.jpg            `normal` full-card images (488x680) of a random subset
 """
@@ -38,8 +38,10 @@ HEADERS = {
 WORKERS = 8
 REQUEST_GAP_S = 0.1 * WORKERS
 
-# Layouts whose art_crop is a normal art box. Tokens are included: they end up on tables.
-ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "adventure"}
+# Layouts whose art_crop fits an existing frame. Tokens also end up on tables.
+# Split and flip cards need new crop geometry; art_series are not playable cards.
+ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "adventure", "prepare", "meld"}
+FACE_LAYOUTS = {"transform", "modal_dfc", "reversible_card", "double_faced_token"}
 
 
 def download_bulk(client: httpx.Client, dest: Path) -> Path:
@@ -59,13 +61,15 @@ def download_bulk(client: httpx.Client, dest: Path) -> Path:
 
 def usable(card: dict) -> bool:
     return (
-        card.get("lang") == "en"
-        and card.get("layout") in ART_LAYOUTS
-        and "paper" in card.get("games", [])
-        and card.get("image_status") in ("highres_scan", "lowres")
-        and not card.get("digital", False)
-        and "art_crop" in (card.get("image_uris") or {})
+        "paper" in card.get("games", []) and card.get("image_status") in ("highres_scan", "lowres") and not card.get("digital", False) and bool(art_faces(card))
     )
+
+
+def art_faces(card: dict) -> list[tuple[int, dict]]:
+    """Only separate printed sides get face IDs; adventure/prepare share one top art box."""
+    layout = card.get("layout")
+    faces = card.get("card_faces", []) if layout in FACE_LAYOUTS else [card] if layout in ART_LAYOUTS else []
+    return [(i, face) for i, face in enumerate(faces) if (face.get("image_uris") or {}).get("art_crop")]
 
 
 def usable_entries(bulk: Path) -> list[dict]:
@@ -74,17 +78,20 @@ def usable_entries(bulk: Path) -> list[dict]:
         for line in f:
             card = json.loads(line)
             if usable(card):
-                entries.append(
-                    {
-                        "id": card["id"],
-                        "oracle_id": card.get("oracle_id"),
-                        "name": card["name"],
-                        "set": card["set"],
-                        "layout": card["layout"],
-                        "collector_number": card["collector_number"],
-                        "url": card["image_uris"]["art_crop"],
-                    }
-                )
+                for face_index, face in art_faces(card):
+                    entries.append(
+                        {
+                            "id": card["id"] if face_index == 0 else f"{card['id']}-{face_index}",
+                            "oracle_id": card.get("oracle_id") or face.get("oracle_id"),
+                            "name": face["name"],
+                            "set": card["set"],
+                            "layout": card["layout"],
+                            "collector_number": card["collector_number"],
+                            "face": face_index,
+                            "lang": card["lang"],
+                            "url": face["image_uris"]["art_crop"],
+                        }
+                    )
     print(f"{len(entries)} usable unique artworks in bulk file")
     return entries
 
@@ -99,7 +106,7 @@ def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> li
     return picked
 
 
-METADATA_FIELDS = ("layout", "collector_number")
+METADATA_FIELDS = ("layout", "collector_number", "face", "lang")
 
 
 def add_metadata(arts: list[dict], entries: list[dict]) -> int:
@@ -177,7 +184,7 @@ def main() -> None:
         "--metadata",
         "--layouts",
         action="store_true",
-        help="only backfill Scryfall metadata (layout, collector_number) into an existing data/arts.json (no image downloads)",
+        help="only backfill Scryfall metadata (layout, collector_number, face, lang) into an existing data/arts.json (no image downloads)",
     )
     parser.add_argument(
         "--update",

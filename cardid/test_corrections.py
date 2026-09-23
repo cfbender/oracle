@@ -58,6 +58,32 @@ class CorrectionsTest(unittest.TestCase):
         self.assertFalse((self.real / CID / "card.png").exists())
         self.assertEqual(len((self.real / "labels.jsonl").read_text().splitlines()), 3)
 
+    def test_face_label_round_trip_and_rejection(self):
+        from . import data, real
+
+        face = {**self.row, "label": LABEL + "-1", "top1": LABEL}
+        self.assertTrue(merge(face, self.jpeg, self.real))
+        self.assertFalse(merge(face, self.jpeg, self.real))
+        saved = latest_labels(self.real)[CID]
+        self.assertEqual(saved["label"], LABEL + "-1")
+        self.assertEqual(saved["top1"], LABEL)
+        self.assertEqual(saved["split"], "train")
+        self.assertTrue((self.real / CID / "card.png").exists())
+        art_dir = self.root / "art"
+        art_dir.mkdir()
+        Image.new("RGB", (137, 100), "red").save(art_dir / f"{LABEL}-1.jpg")
+        with patch.object(real, "REAL_DIR", self.real), patch.object(real, "LABELS", self.real / "labels.jsonl"), patch.object(data, "ART_DIR", art_dir):
+            rows = real.load_labels("train")
+            dataset = real.RealDataset(rows, {LABEL: 3, LABEL + "-1": 7}, layouts={LABEL + "-1": "modal_dfc"})
+            self.assertEqual(len(dataset), 1)
+            self.assertEqual(dataset[0][2], 7)
+            self.assertEqual(dataset.frames[LABEL + "-1"], "modern")
+        for label in [LABEL + suffix for suffix in ["-0", "-2", "-01", ":back", "-1/../x", "-1\n"]] + [123]:
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                merge({**face, "label": label}, self.jpeg, self.real)
+        with self.assertRaises(ValueError):
+            merge({**face, "capture_id": CID + "-1"}, self.jpeg, self.real)
+
     def test_missing_or_degenerate_quad_stays_pending(self):
         for quad in [None, [[1, 1]] * 4, [[1, 1], [50, 50], [1, 50], [50, 1]]]:
             merge({**self.row, "quad": quad}, self.jpeg, self.real)

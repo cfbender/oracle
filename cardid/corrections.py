@@ -27,6 +27,7 @@ from . import DATA_DIR
 from .detect import warp_card
 
 ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+GALLERY_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:-1)?\Z")
 REAL = DATA_DIR / "real"
 
 
@@ -47,7 +48,8 @@ def capture_id(row: dict) -> str:
     value = row["capture_id"]
     if not isinstance(value, str) or not ID.fullmatch(value):
         raise ValueError("invalid correction capture_id")
-    if row.get("label") is not None and not ID.fullmatch(row["label"]):
+    label = row.get("label")
+    if label is not None and (not isinstance(label, str) or not GALLERY_ID.fullmatch(label)):
         raise ValueError("invalid correction label")
     return value
 

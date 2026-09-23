@@ -43,7 +43,7 @@ is a harder retrieval problem. On a machine with the cores/RAM for it:
 
 ```sh
 uv run python -m cardid.scryfall --all              # +43k art crops as train, ~80 min at 10 req/s
-uv run python -m cardid.scryfall --metadata         # backfill `layout`/`collector_number` into an older arts.json (no downloads)
+uv run python -m cardid.scryfall --metadata         # backfill layout/collector_number/face/lang (no image downloads)
 uv run python -m cardid.train --epochs 16 --batch 256 --run full   # workers/threads default to the core count
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full/best.pt --profile realistic
 ```
@@ -51,6 +51,38 @@ uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full
 The eval split stays the same 1,000 arts, so numbers are comparable with the sample runs;
 the gallery grows to every downloaded art. First `gallery_images` call decodes all JPEGs
 (a few minutes) and caches `data/gallery-<n>.npy` (2.4 GB) for later runs.
+
+### Gallery coverage and face IDs
+
+The unique-artwork bulk is accepted in **any language**, including Japanese-only alternate
+art such as SOA #102 Abrade. Entries must still be paper, non-digital, have `highres_scan`
+or `lowres` image status, and have an art crop. This changes the recognition gallery only,
+not the app's English printing picker or identity catalog.
+
+- Single-art layouts: normal, leveler, saga, class, case, mutate, prototype, token,
+  adventure, **prepare**, and **meld**. Prepare shares a top art box like adventure:
+  Studious First-Year // Rampant Growth has one entry with the full combined name, not
+  a second Rampant Growth artwork. Adventures were already supported.
+- Separate-side layouts: **transform, modal_dfc, reversible_card, double_faced_token**.
+  Each face with its own `image_uris.art_crop` becomes an entry using that face's name.
+  STX #325 thus supplies both Jadzi, Oracle of Arcavios and Journey to the Oracle.
+- Still excluded: **art_series** (not playable), **split** (two sideways art areas),
+  and **flip** (centered art between opposing text boxes). Split/flip need new crop geometry.
+  Representative prepare and meld scans have conventional top art boxes; inspected meld
+  results include Ragnarok, Divine Deliverance and Mishra, Lost to Phyrexia.
+
+IDs are the original Scryfall UUID for face 0 and `<uuid>-1` for face 1. Single-art entries
+also record `face: 0`; all entries record `lang` and retain the card's `layout`. Missing
+front images never renumber the back. Reversible cards use the face's oracle ID when the
+parent has none. No ID or train/eval split changes for existing arts. Each side's frame is
+classified from **its own crop aspect**: ordinary transform/MDFC backs use `modern`, while
+extended/showcase, saga and token faces retain the corresponding existing frame. Inclusion
+does not guarantee webcam accuracy for every unusual frame treatment.
+
+The API accepts the same gallery IDs for details and rulings, rejects malformed suffixes,
+and keeps face-aware cache keys. Details select the face's image and rules; rulings are
+fetched from the base card. Correction labels retain the suffix through export/import into
+`data/real`. Only capture IDs remain plain UUIDs.
 
 ## GPU training (AMD RX 9070 XT / ROCm)
 
@@ -308,7 +340,7 @@ override with `--version` or `--out`):
 | `detector.onnx` | uint8 RGBA 256×256 window → card `quad` (4×2, window px, printed order), `up` (2), `centre` (2), `short` side. Runs the four 90° rotations, corner snapping, orientation vote and pose inside the graph. |
 | `embed.onnx` | uint8 RGBA scene (any H×W) + quad → 6×128 embeddings, one per frame cut (`detect.FRAMES`). The projective warp is a `GridSample`, so no OpenCV is needed in the browser. |
 | `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores. The gallery (f16 by default, `--gallery-dtype f32`) and the frame prior (`--frame-penalty`, default 0.02) are baked in; `--topk` defaults to 5. |
-| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `frame`. |
+| `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`. |
 | `manifest.json` | version, checkpoint sha256s, gallery size, every constant the glue code needs (scene 640, detector input 256, refine fill 0.6 / min side 64, card 250×350, art input 128, frame names, opset 17), per-file bytes + sha256. |
 | `SHA256SUMS` | what `publish` and the server verify. |
 
@@ -346,6 +378,26 @@ uv run python -m cardid.publish data/bundles/<version> --to nuc:/srv/the-gatheri
 `--update` keeps the previous bulk file as `unique-artwork.jsonl.gz.previous` and leaves existing art IDs
 and gallery order alone, so the new bundle differs only by appended rows. Retrain (`train
 --real`) only when real-capture accuracy drifts, e.g. a new frame style the six cuts miss.
+
+### Apply the expanded gallery to an existing deployment
+
+This code change **does not regenerate the deployed bundle**. On the training box, from
+`ml/`, use the existing checkpoints (no retraining required) and a fresh immutable version:
+
+```sh
+uv run python -m cardid.scryfall --update
+version="gallery-$(date -u +%Y%m%dT%H%M%SZ)"
+uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt --version "$version"
+uv run python -m cardid.publish "data/bundles/$version" --to nuc:/srv/the-gathering/cardid
+```
+
+Use your currently published checkpoint/detector paths if different (`CARDID_CHECKPOINT`,
+`CARDID_DETECTOR`, and `CARDID_PUBLISH_TO` in the nightly environment name these settings;
+after a successful nightly run, its resume checkpoint is in `data/nightly/state.json`).
+`--update` re-fetches metadata, backfills missing metadata on existing rows, appends newly
+usable language/layout/face entries as train, and downloads only missing art files. Check
+its failed-download count and rerun if needed before exporting. `--metadata` alone never
+adds entries or downloads art. Export's parity check, manifest and checksums are unchanged.
 
 ### Training from in-app corrections
 
@@ -419,6 +471,12 @@ restarting; browsers pick it up on their next table load.
 
 `bash nightly.sh` runs pull → merge → resume training → export/parity check → held-out
 evaluation → conditional publish. Unlike the individual commands above, it gates publication.
+It deliberately does **not** run `scryfall --update`: gallery-only changes would otherwise
+be hidden behind the no-new-corrections gate, bulk/art downloads spend the same two-hour
+budget, and the baseline cannot score labels it does not yet contain. Refresh/export/publish
+the gallery explicitly using the commands above before collecting corrections for newly
+included faces. A future separate gallery-refresh job should have its own budget and
+publication policy rather than silently changing this correction-training gate.
 Requires `uv`, `rsync`, SSH access (or a mounted publish destination), GNU `timeout`, and
 `flock` on the desktop; remote publication also requires `bash`, `flock`, tar and sha256sum.
 No timer is enabled by installing or running this script.
