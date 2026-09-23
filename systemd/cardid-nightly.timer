@@ -1,0 +1,10 @@
+[Unit]
+Description=Optional 04:00 Eastern card recognition retraining
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 America/New_York
+Persistent=true
+Unit=cardid-nightly.service
+
+[Install]
+WantedBy=timers.target

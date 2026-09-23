@@ -347,16 +347,144 @@ uv run python -m cardid.publish data/bundles/<version> --to nuc:/srv/the-gatheri
 and gallery order alone, so the new bundle differs only by appended rows. Retrain (`train
 --real`) only when real-capture accuracy drifts, e.g. a new frame style the six cuts miss.
 
-### Training from in-app corrections (backlog)
+### Training from in-app corrections
 
-The plan for "the card was actually X" clicks in the webcam table: the app stores the same
-record `cardid.capture` does — `crop.jpg` (full-resolution crop around the click), `card.png`
-(the detector's 250×350 warp) and a `labels.jsonl` line with the chosen Scryfall art id — under
-`DATA_DIR/cardid/corrections/`. Syncing that directory into `data/real/` on the training box
-makes it a normal real-capture set: `train --real` fine-tunes and `evaluate --real --detector`
-selects by held-out top-1, then `export`/`publish` as above. Nothing in this package needs to
-change for that; the app side (recording the correction, an export endpoint or rsync) does not
-exist yet.
+Every **explicit picker choice** (including confirming top-1, Shift+click, "Wrong card?",
+and `/` search) can contribute a human-labelled crop. Clear automatic matches never do.
+The small **Share card crops & picks for training** checkbox below the active board persists
+in that browser's localStorage. Both the clicker and the camera owner must allow sharing;
+older peers without a consent flag are excluded. Opting out affects future captures/uploads,
+not samples already saved. Only a successful POST shows "Correction saved for training."
+
+`POST /api/cardid/corrections` uses the signed-in session + CSRF and is limited to 30 requests
+per user per minute. JPEG data URLs are capped at 190 KB encoded (the entire normal payload
+is below 200 KB), dimensions at 640×640. The browser lowers JPEG quality if needed, without
+downscaling. The server writes `DATA_DIR/cardid/corrections/labels.jsonl` and
+`<capture_id>/crop.jpg`, plus internal owner/idempotency metadata. The log records the chosen
+gallery Scryfall printing ID, click in crop pixels, ordered quad, up vote, original top-1,
+similarity/margin, bundle version and deterministic capture-ID split. There is no video,
+room ID, or player name in the export. Relabels append; last label per ID wins.
+
+**The desktop importer creates `card.png`**, a 250×350 warp using `detect.warp_card`, beside
+the original `crop.jpg` in `data/real`. No runtime Python/image decoder is added to Phoenix.
+These are the exact image names `real.py` uses (not `crop.png`). The picker confirms identity,
+not orientation or corners: `up_correct` is deliberately absent, `orientation=0` means the
+detector's ordered quad was used. Review bad warps before detector training; do not mistake
+model-generated quads for human geometry labels. Missing/degenerate quads remain pending
+with no `card.png`, and `load_labels` excludes them until their geometry is repaired.
+
+On the server, set `CARDID_CORRECTIONS_TOKEN` to a random secret (`openssl rand -hex 32`) and
+`CARDID_CORRECTIONS_ADMIN_ID` to an enabled administrator's numeric user ID; the compose file
+passes both through. This is a **read-only correction-export capability**, not a session or
+general API token. Disabling/demoting that admin or rotating the token revokes it. Admin
+cookie sessions can also export. The API returns up to 50 rows at
+`GET /api/cardid/corrections?cursor=N` and JPEGs at `/api/cardid/corrections/:id/crop`.
+
+On the **Linux/ROCm desktop**, from `ml/`:
+
+```sh
+uv sync --extra rocm                              # once
+install -m 600 nightly.env.example ~/.config/cardid.env  # create ~/.config first if needed
+# Edit ~/.config/cardid.env: server URL, matching token, checkpoint, detector and SSH target.
+set -a; . ~/.config/cardid.env; set +a
+uv run python -m cardid.corrections pull
+uv run python -m cardid.train --resume "$CARDID_CHECKPOINT" --real --epochs 2 --workers 2 --threads 2 --run corrections-1
+uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/corrections-1/best.pt --real
+uv run python -m cardid.export --checkpoint data/runs/corrections-1/best.pt --detector "$CARDID_DETECTOR" --version corrections-1
+uv run python -m cardid.publish data/bundles/corrections-1 --to "$CARDID_PUBLISH_TO"
+```
+
+HTTP pull requires HTTPS, keeps its cursor in `data/real/.corrections-cursor.json`, advances
+only after a successful page, and deduplicates by capture ID/source record on retry. Existing
+standalone captures are preserved. A relabel updates the existing capture without changing
+its train/eval split; null labels remain skips. If restoring an older server backup, remove
+the local cursor file to rescan; imports still deduplicate. Back up crops and labels together.
+Keep this private dataset out of Git and restrict directory permissions on both machines.
+
+For mounted storage or rsync, import rather than overwriting the desktop's label log:
+
+```sh
+rsync -a nuc:/srv/the-gathering/cardid/corrections/ data/corrections-inbox/
+uv run python -m cardid.corrections pull --from-dir data/corrections-inbox
+# Or: --from-dir /mnt/gathering/cardid/corrections
+```
+
+`publish` atomically switches `current`, retains the old target as `previous`, and prunes only
+bundle directories, never corrections or either protected target. Versions are immutable:
+use a new `--version` for each export. A legacy plain-directory `current` must first be moved
+to its manifest version and replaced with a symlink. Phoenix serves the new bundle without
+restarting; browsers pick it up on their next table load.
+
+### Optional nightly loop (or the same guarded run by hand)
+
+`bash nightly.sh` runs pull → merge → resume training → export/parity check → held-out
+evaluation → conditional publish. Unlike the individual commands above, it gates publication.
+Requires `uv`, `rsync`, SSH access (or a mounted publish destination), GNU `timeout`, and
+`flock` on the desktop; remote publication also requires `bash`, `flock`, tar and sha256sum.
+No timer is enabled by installing or running this script.
+
+```sh
+bash nightly.sh --dry-run  # actually pulls/merges; exercises synthetic gate cases; never trains/publishes
+bash nightly.sh            # identical to the scheduled run
+```
+
+Defaults: two epochs, two loader workers, two CPU threads, batch 64, reduced learning rates
+(1e-4 head / 3e-5 backbone), nice 15 and a **two-hour wall-clock budget for the whole loop**.
+See `nightly.env.example` for overrides and the filesystem alternative. ROCm still reports
+device `cuda`. Nice limits CPU scheduling priority, not GPU usage; this is not GPU isolation.
+
+The run snapshots the actual published bundle from `CARDID_PUBLISH_TO/current`, verifies its
+checksums and that the resume/detector checkpoints match its manifest, then scores both the
+baseline and candidate ONNX bundles **end-to-end from the same held-out raw crops**. This
+tests deployed detection, orientation, embedding and gallery search, not training accuracy.
+It requires both train and eval samples, rejects missing gallery labels/incomparable sets,
+and publishes only when held-out top-1 is at least the baseline. A tiny eval set is noisy;
+this is a non-regression check, not a statistical guarantee of improvement.
+
+No new usable correction/relabel since the last completed run means **no training or publish**.
+This also works if corrections were pulled manually earlier. Rejected candidates mark that
+dataset as seen; failures/timeouts do not. Dry runs never mark data as trained. The current
+best checkpoint and seen fingerprint live in `data/nightly/state.json`; after publishing a
+model outside this loop, update its `checkpoint` (or remove the state and set
+`CARDID_CHECKPOINT`) to match. Logs and exact correct/count/top-1 values live in
+`data/nightly/YYYY-MM-DD.log` and per-run JSON reports. A lock prevents overlapping runs;
+dataset changes or a changed published manifest abort publication. Keep previous checkpoints
+and bundles for rollback. Do not run another label importer/trainer during this job.
+
+Optional **user systemd units** assume checkout `~/the-gathering` (edit paths if different):
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp systemd/cardid-nightly.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user start cardid-nightly.service        # one run, no schedule
+# Only if you decide to enable nightly runs:
+systemctl --user enable --now cardid-nightly.timer
+systemctl --user list-timers cardid-nightly.timer
+journalctl --user -u cardid-nightly.service
+# systemctl --user disable --now cardid-nightly.timer
+```
+
+The timer specifies `OnCalendar=*-*-* 04:00:00 America/New_York` and `Persistent=true`.
+For execution while logged out, enable user lingering (`loginctl enable-linger "$USER"`).
+Persistent timers catch up on the next boot/login, potentially during the day; disable
+persistence if that is undesirable. The service stops all child processes after two hours.
+
+Equivalent cron schedule (Cronie/cron with `CRON_TZ` support; no missed-run catch-up):
+
+```cron
+CRON_TZ=America/New_York
+PATH=/home/cody/.local/bin:/usr/local/bin:/usr/bin:/bin
+0 4 * * * /bin/bash /home/cody/the-gathering/ml/nightly.sh
+```
+
+Use your actual home path. Cron implementations without `CRON_TZ` must use a host timezone
+of America/New_York; setting `TZ` only for the command does not change scheduling. Do not
+enable both cron and the timer.
+
+CPU-only checks: `uv run ruff check`, `uv run ruff format --check`, and
+`uv run python -m cardid.corrections selftest` cover import/relabel/skip, interrupted HTTP
+pulls, gate boundaries, and local/SSH-shell publication without a GPU or network server.
 
 ### Where to train
 

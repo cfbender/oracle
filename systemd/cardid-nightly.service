@@ -1,0 +1,13 @@
+[Unit]
+Description=Pull corrections and conditionally publish a better card recognizer
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/the-gathering/ml
+EnvironmentFile=%h/.config/cardid.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash %h/the-gathering/ml/nightly.sh
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+TimeoutStopSec=30s
+KillMode=control-group
