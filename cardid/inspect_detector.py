@@ -83,7 +83,7 @@ def sheet(tiles: list[np.ndarray], cols: int = 4) -> np.ndarray:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--val", type=int, default=1000, help="validation set size (must match a cached det-val-<n>-999.npz or it is rendered)")
+    ap.add_argument("--val", type=int, default=1000, help="validation set size (uses the bank-fingerprinted det-val cache or renders it)")
     ap.add_argument("--worst", type=int, default=16, help="how many worst cases to render")
     ap.add_argument("--out", default="/tmp/detector-worst.png")
     ap.add_argument("--device", default="auto")
@@ -92,7 +92,7 @@ def main() -> None:
     device = pick_device(args.device)
     model = CornerNet(pretrained=False).to(device)
     load_checkpoint(model, args.checkpoint, device)
-    scenes, quads = val_scenes(args.val, args.workers)
+    scenes, quads, _ = val_scenes(args.val, args.workers)
     snapped, raw, _ = predict_scenes(model, scenes, device)
     stats, rel = analyse(snapped, raw, quads)
     print(json.dumps(stats, indent=2))

@@ -4,6 +4,7 @@ Usage:
     uv run python -m cardid.scryfall --train 5000 --eval 1000   # 6k sample (~25 min at 10 req/s)
     uv run python -m cardid.scryfall --all                       # then everything else as train
     uv run python -m cardid.scryfall --cards 3000                # full-card images for the detector
+    uv run python -m cardid.scryfall --two-part-cards            # all usable split/flip printing scans, no bulk required
     uv run python -m cardid.scryfall --metadata                  # refresh metadata/printing siblings without downloading art
 
 Writes:
@@ -278,6 +279,51 @@ def card_image_url(art_url: str) -> str:
     return art_url.replace("/art_crop/", "/normal/", 1)
 
 
+def two_part_cards(cards) -> list[dict]:
+    """One untouched portrait scan per usable physical printing, not per artwork/half."""
+    entries = {
+        card["id"]: {"id": card["id"], "layout_group": layout_group(card), "card_url": card["image_uris"]["normal"]}
+        for card in cards
+        if card.get("layout") in TWO_PART_LAYOUTS and usable(card)
+    }
+    return [entries[key] for key in sorted(entries)]
+
+
+def download_two_part_cards(client: httpx.Client) -> None:
+    """Add every usable split/flip printing, including translations, without a bulk download.
+    The manifest identifies successful scans for CardBank; reruns retry missing images and
+    retain old entries. Detector geometry validation is synthetic, not held-out artwork."""
+    url = "https://api.scryfall.com/cards/search"
+    params = {"q": "(layout:split or layout:flip) game:paper include:multilingual", "unique": "prints"}
+    cards = []
+    while url:
+        page = client.get(url, params=params).raise_for_status().json()
+        cards.extend(page["data"])
+        url = page.get("next_page") if page.get("has_more") else None
+        params = None
+        time.sleep(0.1)
+    entries = two_part_cards(cards)
+    CARD_DIR.mkdir(parents=True, exist_ok=True)
+    manifest_path = CARD_DIR / "two-part.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    groups = {e["id"]: e["layout_group"] for e in entries}
+    failed = []
+    with ThreadPoolExecutor(WORKERS) as pool:
+        futures = [pool.submit(fetch_image, client, e, CARD_DIR, "card_url") for e in entries]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="two-part normal"):
+            card_id, ok = fut.result()
+            if ok:
+                manifest[card_id] = groups[card_id]
+            else:
+                failed.append(card_id)
+    tmp = manifest_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    tmp.replace(manifest_path)
+    print(f"two-part scans: {len(entries) - len(failed)}/{len(entries)}; manifest: {manifest_path}")
+    if failed:
+        raise SystemExit(f"{len(failed)} two-part downloads failed; rerun --two-part-cards to retry")
+
+
 def download_cards(client: httpx.Client, arts: list[dict], n: int, seed: int) -> None:
     """Full-card images of `n` random train-split arts (the detector renders whole cards, so
     the sample includes borderless, showcase, and old frames in whatever proportion Scryfall
@@ -305,6 +351,9 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="after sampling, add every remaining usable artwork as train (~52k images, ~3 GB)")
     parser.add_argument("--cards", type=int, help="only download full-card images of this many random train arts into data/cards (~100 KB each)")
     parser.add_argument(
+        "--two-part-cards", action="store_true", help="add all usable split/flip normal scans and sampling manifest (search API; no bulk needed)"
+    )
+    parser.add_argument(
         "--metadata",
         "--layouts",
         action="store_true",
@@ -320,11 +369,14 @@ def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ART_DIR.mkdir(parents=True, exist_ok=True)
     arts_path = DATA_DIR / "arts.json"
-    if args.cards:
-        if not arts_path.exists():
+    if args.cards or args.two_part_cards:
+        if args.cards and not arts_path.exists():
             raise SystemExit("run the art_crop download first so data/arts.json exists")
         with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
-            download_cards(client, json.loads(arts_path.read_text()), args.cards, args.seed)
+            if args.cards:
+                download_cards(client, json.loads(arts_path.read_text()), args.cards, args.seed)
+            if args.two_part_cards:
+                download_two_part_cards(client)
         return
     with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
         bulk_path = DATA_DIR / "all-cards.jsonl.gz"

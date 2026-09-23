@@ -22,10 +22,30 @@ from .evaluate import cosine_topk, topk
 from .gallery import printing_index
 from .index import ArtIndex, frame_similarities
 from .scryfall import HEADERS, WORKERS, fetch_image, usable_entries
-from .synth import SCENE, ArtBank, CardBank, render_scene
+from .synth import SCENE, ArtBank, CardBank, quad_short, render_scene
 
 GROUPS = ("room", "split", "aftermath", "flip")
+GEOMETRY_CLASSES = ("ok", "perpendicular", "rot180", "other")
 ROOT = DATA_DIR / "layout-eval"
+
+
+def detector_geometry(truth: np.ndarray, found: np.ndarray) -> str:
+    """Adapted from the room diagnostic: 15%-short-side cyclic corner tolerance, then
+    long-axis disagreement >60 degrees. An odd cyclic roll only relabels corners, not
+    a physically perpendicular rectangle; record it as other, never as a 90-degree pose.
+    Perpendicular is an axis diagnostic, not a guarantee of correct centre or scale."""
+    short = quad_short(truth)
+    errors = [np.linalg.norm(np.roll(found, -k, axis=0) - truth, axis=1).mean() / short for k in range(4)]
+    k = int(np.argmin(errors))
+    if errors[k] <= 0.15:
+        return {0: "ok", 2: "rot180"}.get(k, "other")
+
+    def axis(quad):
+        a, b = quad[1] - quad[0], quad[3] - quad[0]
+        edge = a if np.linalg.norm(a) > np.linalg.norm(b) else b
+        return edge / np.linalg.norm(edge)
+
+    return "perpendicular" if abs(float(axis(truth) @ axis(found))) < 0.5 else "other"
 
 
 def prepare() -> list[dict]:
@@ -62,7 +82,13 @@ def evaluate(args, entries: list[dict]) -> dict:
     rng = np.random.default_rng(args.seed)
     detector = Detector(args.detector) if args.detector else None
     backgrounds = ArtBank()
-    results = {"checkpoint": str(args.checkpoint), "gallery": len(gallery), "seed": args.seed, "groups": {}}
+    results = {
+        "checkpoint": str(args.checkpoint),
+        "detector": str(args.detector) if args.detector else None,
+        "gallery": len(gallery),
+        "seed": args.seed,
+        "groups": {},
+    }
     scans = ROOT / "cards"
     scans.mkdir(exist_ok=True)
     for group in GROUPS:
@@ -86,6 +112,7 @@ def evaluate(args, entries: list[dict]) -> dict:
                     raise SystemExit(f"Failed scan {card_id}; rerun")
         bank = CardBank([scans / f"{card_id}.jpg" for card_id, _ in cards])
         modes = {"clean_scan": [], "scene_known_quad": [], "scene_old_crops": []}
+        geometry = dict.fromkeys(GEOMETRY_CLASSES, 0)
         if detector:
             modes["scene_detector"] = []
         truths, clean_truths = [], []
@@ -102,6 +129,7 @@ def evaluate(args, entries: list[dict]) -> dict:
                 modes["scene_old_crops"].append(vectors)
                 if detector:
                     detected, _ = detector.locate_up(scene, tuple(quad.mean(axis=0)))
+                    geometry[detector_geometry(quad, detected)] += 1
                     modes["scene_detector"].append(index.embed(art_crops(warp_card(scene, detected))))
                 truths.append(truth)
         for mode, vectors in modes.items():
@@ -115,6 +143,8 @@ def evaluate(args, entries: list[dict]) -> dict:
                     scores = frame_similarities(vec, embeddings, frames)
                 ranks.append(topk(scores, 5)[0])
             metrics[mode] = accuracy(ranks, clean_truths if mode == "clean_scan" else truths)
+        if detector:
+            metrics["detector_geometry"] = {"n": len(truths), "counts": geometry, "shares": {k: v / len(truths) for k, v in geometry.items()}}
         metrics["cards"] = [card_id for card_id, _ in cards]
         results["groups"][group] = metrics
         print(group, json.dumps(metrics), flush=True)

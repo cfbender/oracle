@@ -306,6 +306,71 @@ For detector fine-tuning after regenerating `data/cards`, use
 `uv run python -m cardid.train_detector --resume data/runs/det4/last.pt --epochs 4 --samples 20000 --batch 64 --run det-two-part`,
 then repeat evaluation with `--detector data/runs/det-two-part/best.pt` before exporting.
 
+### Retrain the detector on two-part physical outlines
+
+Rooms/splits put title bars and text along the scan's long axis. A detector trained almost
+entirely on ordinary cards can follow that content and predict a **perpendicular card-shaped
+rectangle**, even with a good centre and aspect ratio. This is a pose failure, not primarily
+the `up` head getting the printed top wrong. Keep Scryfall's portrait `normal` scan unchanged:
+the label is the whole 63×88 physical card, never a rotated half or a landscape rectangle.
+
+`scryfall --two-part-cards` uses the paginated search API (`unique=prints`, multilingual),
+so it needs neither the bulk file nor `arts.json`. It adds every usable paper split/flip
+printing (room, split, aftermath, flip), preserves existing scans, retries missing downloads,
+and records successful printing IDs/groups in `data/cards/two-part.json`. It uses the same
+usable-scan exclusions as the gallery; it does not add or alter recogniser training crops.
+It can run alone or alongside `--cards 3000`. Do not start training until downloads succeed.
+
+`CardBank` draws two-part cards 10% of the time, divided equally among the available layout
+groups, for both clicks and neighbours/occluders. The remaining 90% are ordinary scans;
+balancing by group prevents translations/reprints from overwhelming scarce flip examples.
+Banks containing only one category still work. Without the manifest, draws remain uniform
+and the trainer warns that the two-part bank is missing.
+
+Fixed validation reserves 25% of clicks for two-part cards and stores their groups in a new
+`det-val-<n>-<seed>-<fingerprint>.npz`. It reports `two_part` and individual `room`, `split`,
+`aftermath`, `flip`, `ordinary` counts, median/mean corner error and hit rate alongside
+`synth`. Missing groups have `n: 0` and null metrics, not a misleading zero error. Bank file
+names, manifest grouping and background membership invalidate this cache automatically;
+the old ungrouped cache is not reused. This is fixed-scene validation **on training scans**,
+not a held-out-printing or real-camera accuracy claim. `synth` now includes the 25% stratum,
+so compare checkpoints on the same new cache, not against historical aggregate numbers.
+
+On Cody's **RX 9070 XT / ROCm box**, with the existing `~/.config/cardid.env` configured,
+run these in order from the repository root after updating the code:
+
+```sh
+mise exec -- uv sync --project ml --extra rocm
+export UV_NO_SYNC=1
+cd ml
+mise exec -- uv run python -m cardid.scryfall --update
+mise exec -- uv run python -m cardid.scryfall --cards 3000 --two-part-cards
+mise exec -- uv run python -m cardid.evaluate_layouts --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
+cp data/layout-eval/report.json data/layout-eval/before-two-part.json
+mise run ml:retrain -- --detector-epochs 4 --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt --no-update-gallery --no-publish
+report=$(ls -t data/retrain/*.json | head -n 1)
+detector=$(jq -er '.candidate_detector' "$report")
+mise exec -- uv run python -m cardid.evaluate_layouts --checkpoint data/runs/full-3/best.pt --detector "$detector"
+cp data/layout-eval/report.json data/layout-eval/after-two-part.json
+```
+
+The normal `mise run ml:retrain -- --detector-epochs 4` still works after the download;
+the explicit paths above pin the published pair, skip a redundant gallery refresh, and
+hold publication for review. Retrain also fine-tunes the recogniser as before; this change
+does not modify that training. It adds `--real` when usable correction training data exists.
+Its report selects `best.pt`, falling back to `last.pt` if no epoch beats the starting model.
+The final layout evaluation deliberately keeps `full-3` fixed to isolate detector changes.
+
+Look for lower `two_part.err` / `room.err` and higher hit rates from `start` to epoch output.
+Then compare room `scene_detector.top1` and `detector_geometry.shares` in the before/after
+reports: `perpendicular` should fall and `ok` rise, while ordinary validation and real
+captures should not regress. Geometry uses the diagnostic's 15%-short-side tolerance and
+long-axis cosine <0.5; `rot180` is an otherwise matching outline with inverted printed
+order, and all remaining errors are `other` (an odd corner-index roll is not a physical
+90° rectangle). Check counts; small samples are noisy. Review the candidate recogniser too
+before publishing the already-exported bundle with `ml:publish`. No automatic publication
+is performed by the review recipe above.
+
 ## GPU training (AMD RX 9070 XT / ROCm)
 
 `train`, `train_detector` and `evaluate` take `--device auto|cpu|cuda|mps` (default `auto`,
@@ -464,6 +529,7 @@ with `--real`, augmented by re-windowing the stored crop at random rotation and 
 
 ```sh
 uv run python -m cardid.scryfall --cards 3000                                  # 488x680 card images into data/cards (~5 min)
+uv run python -m cardid.scryfall --two-part-cards                              # all usable split/flip printings + sampling manifest
 uv run python -m cardid.synth --n 16 --out /tmp/scenes.png                     # eyeball the rendered scenes
 uv run python -m cardid.train_detector --epochs 10 --samples 20000 --batch 64 --run det
 uv run python -m cardid.train_detector --resume data/runs/det/best.pt --real --epochs 4 --run det-real
@@ -501,7 +567,9 @@ resolution into memory-mapped banks under `data/cache/` (`cards-*.npy`, `arts-*.
 ~1 GB for 3,000 cards, shared by all workers through the page cache). JPEG decoding is
 entropy-bound, ~5 ms per image whatever the reduced-size flag, and was a quarter of the render
 time; the banks lose nothing because the 640 px window is downscaled 2.5x for the detector.
-Delete the cache directory to rebuild it after changing `data/cards` or `data/art`.
+Adding/removing bank file names automatically changes the decoded cache key. Delete the
+cache directory only when replacing image contents under the same names (or to reclaim
+old banks); the grouped validation cache must also be removed after such replacements.
 `python -m cardid.profile_synth` prints ms/scene and the cProfile hot spots of the renderer.
 
 `bench_loader --detector` times the renderer single-threaded, the same render inside N plain

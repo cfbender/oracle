@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -53,6 +54,7 @@ def list_arts() -> list[Path]:
 CARD_SHAPE = (680, 488)  # Scryfall "normal" full-card JPEGs
 ART_SHAPE = (457, 626)  # the common Scryfall art-crop size; odd crops are centre-cut to it
 BG_ARTS = 1500  # backgrounds sample this many arts (a fixed seeded subset), not the whole gallery
+TWO_PART_RATE = 0.10  # enough rotated-content examples to learn the outline, while 90% remain ordinary cards
 
 
 class ImageBank:
@@ -114,6 +116,24 @@ class ImageBank:
 class CardBank(ImageBank):
     def __init__(self, paths: list[Path] | None = None):
         super().__init__(paths if paths is not None else list_cards(), CARD_SHAPE, "cards")
+        manifests = {}
+        for parent in {p.parent for p in self.paths}:
+            path = parent / "two-part.json"
+            manifests[parent] = json.loads(path.read_text()) if path.exists() else {}
+        # Older --cards downloads can contain a second copy named <printing>-1.jpg.
+        self.groups = np.array([manifests[p.parent].get(p.stem.removesuffix("-1"), "ordinary") for p in self.paths])
+        self.two_part = {group: np.flatnonzero(self.groups == group) for group in ("room", "split", "aftermath", "flip") if np.any(self.groups == group)}
+        self.ordinary = np.flatnonzero(self.groups == "ordinary")
+
+    def sample_index(self, rng: np.random.Generator, two_part_rate: float = TWO_PART_RATE) -> int:
+        """Balance layout groups, not printing counts (translations must not swamp flip).
+        A bank with no manifest retains the old uniform draw, including its RNG sequence."""
+        if not self.two_part:
+            return int(rng.integers(len(self)))
+        if not len(self.ordinary) or rng.random() < two_part_rate:
+            group = list(self.two_part)[int(rng.integers(len(self.two_part)))]
+            return int(rng.choice(self.two_part[group]))
+        return int(rng.choice(self.ordinary))
 
     def load(self, i: int, short: float) -> np.ndarray:
         """The card at index `i` with at least `short` pixels across: the half-res bank copy, or
@@ -293,7 +313,7 @@ def draw_card(
     """Draw a random card from the bank on `quad`; returns its canvas-sized alpha."""
     if quad_roi(quad, canvas.shape) is None:  # entirely outside the window: nothing to decode
         return np.zeros(canvas.shape[:2], np.float32)
-    img, alpha = card_face(rng, cards, int(rng.integers(len(cards))) if index is None else index, quad_short(quad), detail)
+    img, alpha = card_face(rng, cards, cards.sample_index(rng) if index is None else index, quad_short(quad), detail)
     if shadow and rng.random() < 0.7:
         # soft drop shadow: darken under a shifted, blurred copy of the card's alpha
         sh_quad = quad + rng.uniform(-6, 6, size=2).astype(np.float32)
@@ -521,7 +541,15 @@ class SceneDataset(Dataset):
     (or in pixels with `raw`) in printed order, and `up_valid` = True: a rendered scene knows
     which way its card is printed, so the detector's up output can learn from it."""
 
-    def __init__(self, length: int, cards: CardBank | None = None, arts: ArtBank | None = None, seed: int = 0, raw: bool = False):
+    def __init__(
+        self,
+        length: int,
+        cards: CardBank | None = None,
+        arts: ArtBank | None = None,
+        seed: int = 0,
+        raw: bool = False,
+        target_indices: np.ndarray | None = None,
+    ):
         self.length = length
         self.cards = cards or CardBank()
         self.arts = arts if arts is not None else ArtBank()
@@ -530,6 +558,7 @@ class SceneDataset(Dataset):
         self.seed = seed
         self.raw = raw
         self.epoch = 0
+        self.target_indices = target_indices
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -539,7 +568,8 @@ class SceneDataset(Dataset):
 
     def __getitem__(self, i: int):
         rng = np.random.default_rng([self.seed, self.epoch, i])
-        scene, quad = render_scene(rng, self.cards, self.arts)
+        target = int(self.target_indices[i]) if self.target_indices is not None else None
+        scene, quad = render_scene(rng, self.cards, self.arts, target_index=target)
         return torch.from_numpy(scene), torch.from_numpy(quad if self.raw else quad / DET_INPUT), torch.tensor(True)
 
 

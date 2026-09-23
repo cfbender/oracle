@@ -15,6 +15,7 @@ plane, i.e. the card would be warped the right way round. `real_e2e` runs the ac
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -43,25 +44,39 @@ from .detector import (
 )
 from .model import describe_device, gpu, pick_device
 from .real import REAL_DIR, load_labels
-from .synth import DET_INPUT, RealSceneDataset, SceneDataset, batch_to_input, quad_short
+from .synth import DET_INPUT, TWO_PART_RATE, ArtBank, CardBank, RealSceneDataset, SceneDataset, batch_to_input, quad_short
 
 HIT = 0.05
 
 
-def val_scenes(n: int, workers: int, seed: int = 999) -> tuple[np.ndarray, np.ndarray]:
-    """Fixed synthetic validation scenes (uint8) and quads (px), cached on disk."""
-    cache = DATA_DIR / f"det-val-{n}-{seed}.npz"
+def validation_targets(cards: CardBank, n: int, seed: int) -> np.ndarray:
+    """Reserve every fourth clicked card for two-part layouts, balanced across groups.
+    These are fixed scenes, not held-out printings; evaluate real captures separately."""
+    rng = np.random.default_rng(seed)
+    return np.array([cards.sample_index(rng, two_part_rate=float(i % 4 == 0)) for i in range(n)])
+
+
+def val_scenes(n: int, workers: int, seed: int = 999) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Fixed scenes, portrait quads (px), and clicked-card groups. Bank/manifest changes
+    invalidate the cache; old ungrouped det-val files are deliberately never reused."""
+    cards, arts = CardBank(), ArtBank()
+    identity = f"grouped-v1:{cards.path.name}:{arts.path.name}:{TWO_PART_RATE}:{','.join(cards.groups)}"
+    key = hashlib.sha1(identity.encode()).hexdigest()[:12]
+    cache = DATA_DIR / f"det-val-{n}-{seed}-{key}.npz"
     if cache.exists():
-        z = np.load(cache)
-        return z["scenes"], z["quads"]
-    loader = DataLoader(SceneDataset(n, seed=seed, raw=True), batch_size=32, num_workers=workers, worker_init_fn=worker_init)
+        with np.load(cache) as z:
+            return z["scenes"], z["quads"], z["groups"]
+    indices = validation_targets(cards, n, seed)
+    groups = cards.groups[indices]
+    dataset = SceneDataset(n, cards=cards, arts=arts, seed=seed, raw=True, target_indices=indices)
+    loader = DataLoader(dataset, batch_size=32, num_workers=workers, worker_init_fn=worker_init)
     scenes, quads = [], []
     for s, q, _ in tqdm(loader, desc="val scenes", leave=False):
         scenes.append(s.numpy())
         quads.append(q.numpy())
     scenes, quads = np.concatenate(scenes), np.concatenate(quads)
-    np.savez(cache, scenes=scenes, quads=quads)
-    return scenes, quads
+    np.savez(cache, scenes=scenes, quads=quads, groups=groups)
+    return scenes, quads, groups
 
 
 def summarize(pred: np.ndarray, target: np.ndarray) -> dict:
@@ -100,10 +115,24 @@ def up_accuracy(up: np.ndarray, quads: np.ndarray) -> dict:
     return {"up": round(float(right.mean()), 3), "up_big": round(float(right[big].mean()), 3) if big.any() else None}
 
 
-def eval_scenes(model: CornerNet, scenes: np.ndarray, quads: np.ndarray, device: torch.device, batch: int = 64) -> dict:
+def eval_scenes(
+    model: CornerNet,
+    scenes: np.ndarray,
+    quads: np.ndarray,
+    device: torch.device,
+    batch: int = 64,
+    groups: np.ndarray | None = None,
+) -> dict:
     """{"synth": snapped error + up accuracy, "synth_pose": raw pose-head error} on the fixed validation set."""
     snapped, raw, up = predict_scenes(model, scenes, device, batch)
-    return {"synth": {**summarize(snapped, quads), **up_accuracy(up, quads)}, "synth_pose": summarize(raw, quads)}
+    metrics = {"synth": {**summarize(snapped, quads), **up_accuracy(up, quads)}, "synth_pose": summarize(raw, quads)}
+    if groups is not None:
+        for name in ("two_part", "ordinary", "room", "split", "aftermath", "flip"):
+            mask = groups != "ordinary" if name == "two_part" else groups == name
+            metrics[name] = (
+                {"n": int(mask.sum()), **summarize(snapped[mask], quads[mask])} if mask.any() else {"n": 0, "err": None, "err_mean": None, "hit": None}
+            )
+    return metrics
 
 
 @torch.no_grad()
@@ -192,7 +221,9 @@ def main() -> None:
         persistent_workers=True,
         pin_memory=device.type == "cuda" and not args.no_pin,
     )
-    scenes, quads = val_scenes(args.val, args.workers)
+    scenes, quads, groups = val_scenes(args.val, args.workers)
+    if not synth.cards.two_part:
+        print("WARNING: no two-part scans; run python -m cardid.scryfall --two-part-cards")
 
     model = CornerNet(pretrained=args.resume is None).to(device)
     if args.resume:
@@ -205,7 +236,7 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[args.backbone_lr, args.lr], total_steps=steps, pct_start=0.15)
 
     def evaluate() -> dict:
-        out = eval_scenes(model, scenes, quads, device)
+        out = eval_scenes(model, scenes, quads, device, groups=groups)
         if real_eval is not None:
             out.update(eval_real(model, real_eval, device))
         model.train()
