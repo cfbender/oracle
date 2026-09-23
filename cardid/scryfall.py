@@ -85,18 +85,22 @@ def usable(card: dict) -> bool:
         "paper" in card.get("games", [])
         and card.get("image_status") in ("highres_scan", "lowres")
         and not card.get("digital", False)
-        and not playtest(card)
+        and not hub_card(card)
         and bool(art_faces(card))
     )
 
 
-def playtest(card: dict) -> bool:
-    """Mystery Booster / Playtest sketch cards are near-textureless line art in a plain frame,
-    regardless of their nominal `layout`. Their embeddings sit near everything and become hubs
-    that soak up degraded queries (nine of sixteen real-camera misses once landed on one
-    `split`-layout playtest card), and they are not Commander-legal. Keyed on `promo_types`
-    rather than `set_type: funny`, which would also drop Unfinity's legal cards."""
-    return "playtest" in card.get("promo_types", [])
+def hub_card(card: dict) -> bool:
+    """Paper "cards" whose face is mostly flat text or sketch lines, whatever their nominal
+    `layout`. Their embeddings sit near everything and become hubs that soak up degraded
+    queries: on one real-camera evaluation, playtest cards took nine of sixteen wrong top-1
+    hits and World Championship decklist/ad cards most of the wrong other-orientation hits.
+
+    - Mystery Booster / Playtest sketch cards: `promo_types` contains `playtest`. Keyed on that
+      rather than `set_type: funny`, which would also drop Unfinity's legal cards.
+    - Non-game inserts whose `type_line` is the bare word `Card`: World Championship decklists,
+      bios and ads, minigame cards. Real tokens keep their own type lines and stay."""
+    return "playtest" in card.get("promo_types", []) or card.get("type_line") == "Card"
 
 
 def art_faces(card: dict) -> list[tuple[int, dict]]:
@@ -114,7 +118,7 @@ def supported_faces(card: dict) -> list[dict]:
 
 def usable_entries(bulk: Path, excluded: set[str] | None = None) -> list[dict]:
     """Every paper artwork worth embedding, with its selectable printings. When `excluded` is
-    given, it collects the face IDs of paper cards this version rejects (see `playtest`) so an
+    given, it collects the face IDs of paper cards this version rejects (see `hub_card`) so an
     arts.json written before the rule can retire those rows without renumbering the rest."""
     groups = {}
     with gzip.open(bulk, "rt", encoding="utf-8") as f:
@@ -124,7 +128,7 @@ def usable_entries(bulk: Path, excluded: set[str] | None = None) -> list[dict]:
                 continue
             layout = card.get("layout")
             faces = supported_faces(card)
-            if playtest(card):
+            if hub_card(card):
                 if excluded is not None:
                     excluded.update(card["id"] if i == 0 else f"{card['id']}-{i}" for i in range(len(faces)))
                 continue

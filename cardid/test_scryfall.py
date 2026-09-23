@@ -113,14 +113,19 @@ class ScryfallTest(unittest.TestCase):
         self.assertTrue(scryfall.usable({**ABRADE, "lang": "zhs", "image_status": "lowres"}))
         self.assertFalse(scryfall.usable({**JADZI, "digital": True}))
 
-    def test_playtest_cards_are_rejected_and_retired_from_an_older_arts_json(self):
+    def test_hub_cards_are_rejected_and_retired_from_an_older_arts_json(self):
         # Bind // Liberate (cmb1) is a `split`-layout sketch card in a plain frame; its flat
         # crop became a hub for degraded real-camera queries. Unfinity stays: it is `funny`
-        # but not playtest.
+        # but not playtest. World Championship decklists are `token`-layout inserts typed
+        # as a bare "Card"; real tokens keep their type line.
         bind = {**STUDIOUS, "id": "22222222-2222-2222-2222-222222222222", "layout": "split", "set": "cmb1", "set_type": "funny", "promo_types": ["playtest"]}
         unfinity = {**ABRADE, "id": "33333333-3333-3333-3333-333333333333", "set": "unf", "set_type": "funny", "promo_types": []}
+        decklist = {**ABRADE, "id": "44444444-4444-4444-4444-444444444444", "layout": "token", "set": "wc01", "set_type": "memorabilia", "type_line": "Card"}
+        token = {**ABRADE, "id": "55555555-5555-5555-5555-555555555555", "layout": "token", "set": "tmt", "type_line": "Token Creature — Turtle"}
         self.assertFalse(scryfall.usable(bind))
+        self.assertFalse(scryfall.usable(decklist))
         self.assertTrue(scryfall.usable(unfinity))
+        self.assertTrue(scryfall.usable(token))
         excluded = set()
         with gzip.open(self.bulk, "wt") as out:
             for card in [bind, ABRADE, unfinity]:

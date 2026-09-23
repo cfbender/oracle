@@ -645,10 +645,12 @@ count and rerun if needed before exporting. `--metadata` alone never adds artwor
 downloads art, but does refresh siblings from its cached bulk file.
 Export's parity check, manifest and checksums are unchanged.
 
-Both also retire rows that a newer `usable` rule rejects: Mystery Booster / Playtest sketch
-cards (`promo_types` containing `playtest`, any layout) are near-textureless line art whose
-embeddings sit close to everything, so one of them (Bind // Liberate, cmb1) collected nine
-of sixteen real-camera misses. Such rows stay in `data/arts.json` with `"excluded": true`
+Both also retire rows that a newer `usable` rule rejects (`scryfall.hub_card`): Mystery
+Booster / Playtest sketch cards (`promo_types` containing `playtest`, any layout) and
+non-game inserts typed as a bare `Card` (World Championship decklists, bios and ads,
+minigame cards) are near-textureless slabs whose embeddings sit close to everything, so
+Bind // Liberate (cmb1) collected nine of sixteen real-camera misses and decklist cards most
+wrong other-orientation hits. Such rows stay in `data/arts.json` with `"excluded": true`
 so nothing renumbers, but they are dropped from training, evaluation, downloads and the
 exported gallery. Rerun `scryfall --update` (or `--metadata`) and re-export to apply this to
 an existing `arts.json`; no retraining is required.
