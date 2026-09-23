@@ -117,7 +117,7 @@ class ScryfallTest(unittest.TestCase):
         for layout in ["prepare", "adventure", "meld"]:
             with self.subTest(layout=layout):
                 self.assertEqual(len(self.entries([{**STUDIOUS, "layout": layout}])), 1)
-        for layout in ["split", "flip", "art_series"]:
+        for layout in ["battle", "art_series"]:
             with self.subTest(layout=layout):
                 self.assertFalse(scryfall.usable({**ABRADE, "layout": layout}))
                 self.assertFalse(scryfall.usable({**JADZI, "layout": layout}))

@@ -22,7 +22,7 @@ from torch.utils.data import Dataset
 from . import DATA_DIR
 from .data import art_path, to_tensor
 from .degrade import INPUT_SIZE, clean_view, load_rgb
-from .detect import CARD_H, CARD_W, art_crops, frame_box, frame_of
+from .detect import CARD_H, CARD_W, FRAME_ROTATIONS, art_crops, frame_box, frame_of
 from .gallery import printing_index
 
 REAL_DIR = DATA_DIR / "real"
@@ -76,6 +76,7 @@ def art_from_card(card: np.ndarray, rng: np.random.Generator | None = None, fram
     dst = np.float32([[0, 0], [INPUT_SIZE, 0], [INPUT_SIZE, INPUT_SIZE], [0, INPUT_SIZE]])
     M = cv2.getPerspectiveTransform(box.astype(np.float32), dst)
     art = cv2.warpPerspective(card, M, (INPUT_SIZE, INPUT_SIZE), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    art = np.ascontiguousarray(np.rot90(art, FRAME_ROTATIONS.get(frame, 0)))
     if rng is not None:
         art = art.astype(np.float32) * rng.uniform(0.9, 1.1, size=3).astype(np.float32)
         art = (art - 128) * rng.uniform(0.85, 1.15) + 128 + rng.uniform(-15, 15)
@@ -102,7 +103,7 @@ class RealDataset(Dataset):
             entry = arts[art_index[r["label"]]]
             art = load_rgb(art_path(entry))
             self.cleans[r["label"]] = clean_view(art)
-            self.frames[r["label"]] = frame_of(art.shape[1] / art.shape[0], entry.get("layout"))
+            self.frames[r["label"]] = frame_of(art.shape[1] / art.shape[0], entry.get("layout"), entry.get("face", 0), entry.get("layout_group"))
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch

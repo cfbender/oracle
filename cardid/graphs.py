@@ -13,7 +13,7 @@ Three graphs, all with the image handed over as the browser has it (uint8 RGBA, 
 the four 90-degree rotations, CornerNet, the heatmap corner snap (`snap_corners`, written
 over the whole 64x64 grid with masks instead of dynamic slices) and the up vote. `EmbedGraph`
 is `detect.warp_card` + `detect.art_crops` + `Embedder`: a bilinear perspective warp of the
-quad to the 250x350 card via the closed-form square-to-quad projective map, the six frame
+quad to the 250x350 card via the closed-form square-to-quad projective map, all frame
 cuts resized to 128px and embedded in one batch. `SearchGraph` is `index.frame_similarities`
 + top-k with the gallery embeddings, per-art frames and the frame prior stored as constants.
 
@@ -29,7 +29,7 @@ from torch import nn
 
 from .data import IMAGENET_MEAN, IMAGENET_STD
 from .degrade import INPUT_SIZE
-from .detect import CARD_H, CARD_W, FRAME_NAMES, frame_box
+from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_ROTATIONS, frame_box
 from .detector import CARD_ASPECT, HEAT_SIZE, HEAT_STRIDE, CornerNet
 from .model import Embedder
 from .synth import DET_INPUT
@@ -181,10 +181,13 @@ class EmbedGraph(nn.Module):
         grid = (2 * xy.T / size - 1).view(1, CARD_H, CARD_W, 2)
         card = nn.functional.grid_sample(img, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
         card = torch.round(card).clamp(0, 255)
-        crops = [
-            torch.round(nn.functional.interpolate(card[:, :, y0:y1, x0:x1], size=(INPUT_SIZE, INPUT_SIZE), mode="bilinear", align_corners=False))
-            for x0, y0, x1, y1 in self.boxes
-        ]
+        crops = []
+        for frame, (x0, y0, x1, y1) in zip(FRAME_NAMES, self.boxes, strict=True):
+            crop = card[:, :, y0:y1, x0:x1]
+            # aten::rot90 is not exported at opset 17; transpose + flip is identical.
+            for _ in range(FRAME_ROTATIONS.get(frame, 0)):
+                crop = torch.flip(crop.transpose(2, 3), dims=(2,))
+            crops.append(torch.round(nn.functional.interpolate(crop, size=(INPUT_SIZE, INPUT_SIZE), mode="bilinear", align_corners=False)))
         x = torch.cat(crops) / 255.0
         mean = torch.as_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
         std = torch.as_tensor(IMAGENET_STD).view(1, 3, 1, 1)

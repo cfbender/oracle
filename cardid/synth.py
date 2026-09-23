@@ -282,12 +282,18 @@ def card_face(rng: np.random.Generator, cards: CardBank, index: int, short: floa
 
 
 def draw_card(
-    canvas: np.ndarray, rng: np.random.Generator, cards: CardBank, quad: np.ndarray, shadow: bool = True, detail: float = DET_INPUT / SCENE
+    canvas: np.ndarray,
+    rng: np.random.Generator,
+    cards: CardBank,
+    quad: np.ndarray,
+    shadow: bool = True,
+    detail: float = DET_INPUT / SCENE,
+    index: int | None = None,
 ) -> np.ndarray:
     """Draw a random card from the bank on `quad`; returns its canvas-sized alpha."""
     if quad_roi(quad, canvas.shape) is None:  # entirely outside the window: nothing to decode
         return np.zeros(canvas.shape[:2], np.float32)
-    img, alpha = card_face(rng, cards, int(rng.integers(len(cards))), quad_short(quad), detail)
+    img, alpha = card_face(rng, cards, int(rng.integers(len(cards))) if index is None else index, quad_short(quad), detail)
     if shadow and rng.random() < 0.7:
         # soft drop shadow: darken under a shifted, blurred copy of the card's alpha
         sh_quad = quad + rng.uniform(-6, 6, size=2).astype(np.float32)
@@ -448,9 +454,18 @@ def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_I
     return cv2.cvtColor(cv2.imdecode(enc, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 
 
-def render_scene(rng: np.random.Generator, cards: CardBank, arts: ArtBank, size: int = SCENE, out: int = DET_INPUT) -> tuple[np.ndarray, np.ndarray]:
+def render_scene(
+    rng: np.random.Generator,
+    cards: CardBank,
+    arts: ArtBank,
+    size: int = SCENE,
+    out: int = DET_INPUT,
+    target_index: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Compose a `size` x `size` native-pixel window and return it downscaled to `out` x `out`
-    RGB uint8 with the 4x2 float32 printed-order corners of the clicked card in `out` pixels."""
+    RGB uint8 with the 4x2 float32 printed-order corners of the clicked card in `out` pixels.
+    `target_index` fixes the clicked scan for layout-stratified evaluation. Full scans retain
+    both halves, their text and rotations; never paint a small half into a modern art box."""
     canvas = background(rng, arts, size)
     # short side of the clicked card: ~70 px (1080p over a 4-player table) to ~380 (4K, close)
     short = float(np.exp(rng.uniform(np.log(70), np.log(380))))
@@ -469,7 +484,7 @@ def render_scene(rng: np.random.Generator, cards: CardBank, arts: ArtBank, size:
     ring_alpha = None
     if sleeved:
         _, ring_alpha = draw_sleeve_ring(canvas, rng, quad)
-    card_alpha = draw_card(canvas, rng, cards, quad, shadow=not sleeved, detail=out / size)
+    card_alpha = draw_card(canvas, rng, cards, quad, shadow=not sleeved, detail=out / size, index=target_index)
     if loader_alpha is not None:
         # the loader's plastic catches the light over card, sleeve and its own margin alike
         alpha = np.maximum(card_alpha, loader_alpha) if ring_alpha is None else np.maximum(np.maximum(card_alpha, ring_alpha), loader_alpha)

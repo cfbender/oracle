@@ -16,7 +16,7 @@ frame, extended art, the tall art of full-art basics and most tokens, and the ha
 of sagas (right half) and class/case cards (left half). `detect.FRAMES` holds the boxes,
 measured by template-matching art crops back into card scans; each gallery art's frame is
 read off its image aspect (plus the Scryfall layout for the half-width ones), every click
-embeds all six cuts in one batch, and each art is scored against the cut for its frame
+embeds all frame cuts in one batch (14 with the two-part layouts below), and each art is scored against the cut for its frame
 (`index.frame_similarities`). On clean card scans through the orb model this took sagas from
 0.25 to 1.00 top-1, class cards from 0 to 1.00 and full-art lands from 0.92 to 1.00 with
 modern cards unchanged; the extra cuts cost ~50 ms on the orb CPU. The rare frames (tall,
@@ -30,13 +30,14 @@ beat the truth by 0.01 in real evals while on clean scans no rare-frame impostor
 ```sh
 cd ml
 uv sync --extra cpu                            # CPU-only torch from the pytorch index (see GPU training below)
+export UV_NO_SYNC=1                            # preserve the installed torch extra
 uv run python -m cardid.scryfall --train 5000 --eval 1000   # bulk metadata + art_crop sample
 uv run python -m cardid.degrade <art_id>       # visual check of the synthetic webcam degradation
 ```
 
 torch lives in the mutually exclusive `cpu` and `rocm` extras, so `uv sync` needs one of them
-once; later `uv run` calls keep whatever is installed. A plain `uv sync` (no extra) removes
-torch again.
+once. Export `UV_NO_SYNC=1` for subsequent `uv run` calls so they retain that extra.
+A plain `uv sync` (no extra) removes torch again.
 
 ## Full catalog (bigger machine)
 
@@ -95,8 +96,9 @@ but share scanned art and are now selectable. Alpha/Beta are included too.
 - Separate-side layouts: **transform, modal_dfc, reversible_card, double_faced_token**.
   Each face with its own `image_uris.art_crop` becomes an entry using that face's name.
   STX #325 thus supplies both Jadzi, Oracle of Arcavios and Journey to the Oracle.
-- Still excluded: **art_series** (not playable), **split** (two sideways art areas),
-  and **flip** (centered art between opposing text boxes). Split/flip need new crop geometry.
+- Same-surface halves: **split** (Rooms, classic split, aftermath) and **flip**. Each half
+  gets its own name/ID and a region cut from the shared `normal` scan; see the geometry below.
+- Still excluded: **art_series**, **battle**, and novelty split cards with three or five parts.
   Representative prepare and meld scans have conventional top art boxes; inspected meld
   results include Ragnarok, Divine Deliverance and Mishra, Lost to Phyrexia.
 
@@ -123,6 +125,104 @@ fetched from the base card. Correction labels retain the suffix through export/i
 `data/real`. Exact sibling labels are preserved; real training opens the representative's
 JPEG and real/nightly evaluation scores artwork identity, not whether an indistinguishable
 printing was guessed. Only capture IDs remain plain UUIDs.
+
+### Rooms, split/aftermath and flip geometry
+
+Scryfall's `normal` image puts Rooms and classic splits sideways in a **portrait** scan.
+Rooms are distinguished by `Room` in a face's type line, aftermath by the `Aftermath`
+keyword, never by name or image aspect. `layout_group` preserves that distinction in
+training metadata; `layout` remains Scryfall's original `split` or `flip`.
+
+The checked all-language bulk contains no individual image URIs for these halves. Its
+`art_crop` joins both artworks (or contains the shared central flip illustration). Most
+records omit face 1's illustration ID; 26 repeat face 0's ID on face 1. Therefore these
+regions use `<shared illustration_id>:face:0|1` as artwork keys, falling back to printing
+identity when unavailable. This prevents translations with inconsistent face metadata from
+collapsing the halves. Public gallery IDs remain `<printing UUID>` and `<printing UUID>-1`.
+The source `url` is the whole `normal` image; only the downloaded training JPEG is cropped.
+
+Measured on 488×680 scans of DSK #67 Mirror Room, APC #128 and MH2 #290 Fire // Ice,
+DGM #135 Wear // Tear, AKH #211 Commit // Memory and #223 Cut // Ribbons, and CHK #202
+Budoka Gardener and #131 Nezumi Shortfang. Fractions below refer to the stored portrait
+scan. Classic split boxes deliberately use the common **interior** of old and modern art
+windows, avoiding their differently positioned type bars. Flip art is shared in the center:
+the two regions are left/right, not the upper/lower rules boxes. Unusual showcase treatments
+are included but not individually calibrated.
+
+| Frame | x0, y0, x1, y1 | Rotate crop upright |
+|---|---|---|
+| room_0 | .135, .485, .535, .910 | 90° clockwise |
+| room_1 | .135, .050, .535, .475 | 90° clockwise |
+| split_0 | .160, .565, .490, .900 | 90° clockwise |
+| split_1 | .160, .095, .490, .430 | 90° clockwise |
+| aftermath_0 | .075, .115, .925, .335 | none |
+| aftermath_1 | .550, .565, .830, .915 | 90° counter-clockwise |
+| flip_0 | .085, .315, .490, .655 | none |
+| flip_1 | .510, .315, .915, .655 | 180° |
+
+The original six frames retain their order; these eight append to `FRAME_NAMES`. Native
+gallery cuts, Python queries, real-correction training and the exported embed graph apply
+the same rotation. The browser passes the graph's tensor through without imposing a frame
+count/order, so old six-frame bundles still load. New frames inherit the 0.02 rare-frame
+penalty provisionally: they are less than 1% of the gallery and otherwise provide extra
+opportunities for false matches. Tune this with real corrections, not clean scan scores.
+
+In the inspected snapshot these layouts add **362 regions / 3,004 printing faces**:
+Rooms 78/512, classic split 170/1,570, aftermath 62/818, flip 52/104. These are metadata
+coverage counts, not an accuracy guarantee. Battles and art series remain excluded.
+
+`synth` renders the actual full-card scans, preserving both artworks, text and orientations.
+`render_scene(target_index=...)` lets evaluation choose the target without changing the
+scene distribution. `evaluate_layouts` reports isolated-art retrieval separately from
+full-card retrieval with known corners and optionally detector corners. Both halves are
+valid card-identity targets in full scenes; these numbers do **not** measure which Room
+door is unlocked or which flip ability is active. No such state is inferred by the app.
+The old-crops control generously tries all six previous cuts against the new gallery.
+
+Smoke evaluation (2026-09-23): `m0-arc/best.pt`, **not** production `full-3`, against the
+original 6,000 arts plus all 362 new regions. Seed 2026, three realistic degraded queries
+per art; twelve full scans × three synthetic scenes per group. Values are top-1/top-5:
+
+| Layout | Isolated art (queries) | Clean scans | Scenes, known corners | Scenes, old cuts | Scenes, smoke detector |
+|---|---|---|---|---|---|
+| Room | 72.2% / 89.7% (234) | 100% / 100% | 75.0% / 77.8% | 0% / 5.6% | 5.6% / 5.6% |
+| Split | 79.4% / 89.8% (510) | 91.7% / 100% | 58.3% / 72.2% | 2.8% / 2.8% | 0% / 0% |
+| Aftermath | 60.2% / 81.2% (186) | 100% / 100% | 61.1% / 72.2% | 0% / 0% | 0% / 19.4% |
+| Flip | 79.5% / 91.7% (156) | 100% / 100% | 55.6% / 66.7% | 11.1% / 22.2% | 25.0% / 38.9% |
+
+The unchanged existing eval split (1,000 arts, 3,000 queries) scores 77.23%/88.03% with
+6,000 gallery rows and 76.93%/87.63% with 6,362. These isolated-art queries do not measure
+extra-frame false matches. No real corrections were available. The smoke detector is
+`det-orb-up/last.pt`, not production `det4`. Geometry makes the new regions recognizable
+without embedder retraining, but the low end-to-end smoke scores do **not** establish
+production readiness. Evaluate the production pair before publishing; first investigate
+detector corners/orientation if that gap remains, rather than blindly retraining the embedder.
+
+Run on the training box from `ml/` (use your actual checkpoint/detector paths):
+
+```sh
+uv sync --extra rocm
+export UV_NO_SYNC=1
+uv run python -m cardid.scryfall --update
+uv run python -m cardid.scryfall --cards 3000
+uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/full-3/best.pt --profile realistic
+uv run python -m cardid.evaluate_layouts --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
+version="two-part-$(date -u +%Y%m%dT%H%M%SZ)"
+uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt --version "$version" --verify 64
+# Publish only after reviewing the evaluation (not performed by this code change):
+uv run python -m cardid.publish "data/bundles/$version" --to nuc:/srv/the-gathering/cardid
+```
+
+For a small existing gallery, `evaluate_layouts --prepare-only` downloads only these new
+regions without changing `arts.json` or its splits. Evaluation keeps its scans/report in
+`data/layout-eval/`; remove that directory to refresh the bulk-derived evaluation selection.
+If production evaluation warrants embedder fine-tuning, use
+`uv run python -m cardid.train --resume data/runs/full-3/best.pt --epochs 4 --batch 256 --run two-part`,
+then evaluate/export `data/runs/two-part/best.pt`. Add `--real` only after collecting usable
+corrections; do not treat these synthetic measurements as real camera accuracy.
+For detector fine-tuning after regenerating `data/cards`, use
+`uv run python -m cardid.train_detector --resume data/runs/det4/last.pt --epochs 4 --samples 20000 --batch 64 --run det-two-part`,
+then repeat evaluation with `--detector data/runs/det-two-part/best.pt` before exporting.
 
 ## GPU training (AMD RX 9070 XT / ROCm)
 
@@ -380,7 +480,7 @@ you pass `--force` for one that was never published:
 | file | contents |
 |---|---|
 | `detector.onnx` | uint8 RGBA 256×256 window → card `quad` (4×2, window px, printed order), `up` (2), `centre` (2), `short` side. Runs the four 90° rotations, corner snapping, orientation vote and pose inside the graph. |
-| `embed.onnx` | uint8 RGBA scene (any H×W) + quad → 6×128 embeddings, one per frame cut (`detect.FRAMES`). The projective warp is a `GridSample`, so no OpenCV is needed in the browser. |
+| `embed.onnx` | uint8 RGBA scene (any H×W) + quad → F×128 embeddings (currently F=14), one per frame cut (`detect.FRAMES`). The projective warp is a `GridSample`, so no OpenCV is needed in the browser. |
 | `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores. The gallery (f16 by default, `--gallery-dtype f32`) and the frame prior (`--frame-penalty`, default 0.02) are baked in; `--topk` defaults to 5. |
 | `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`, `illustration_id`, crop `url`, `printing_count`. No nested siblings. |
 | `printings.json` | representative art ID → all selectable sibling printing records. Downloaded only on the first gallery search or printing expansion, shared and cached by bundle version. |

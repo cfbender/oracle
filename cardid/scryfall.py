@@ -23,10 +23,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import cv2
 import httpx
+import numpy as np
 from tqdm import tqdm
 
 from . import ART_DIR, CARD_DIR, DATA_DIR
+from .detect import frame_crop, frame_of
 
 BULK_URL = "https://api.scryfall.com/bulk-data"
 HEADERS = {
@@ -38,10 +41,28 @@ HEADERS = {
 WORKERS = 8
 REQUEST_GAP_S = 0.1 * WORKERS
 
-# Layouts whose art_crop fits an existing frame. Tokens also end up on tables.
-# Split and flip cards need new crop geometry; art_series are not playable cards.
+# Tokens also end up on tables. Art series and landscape battles remain excluded.
 ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "adventure", "prepare", "meld"}
-FACE_LAYOUTS = {"transform", "modal_dfc", "reversible_card", "double_faced_token"}
+FACE_LAYOUTS = {"transform", "modal_dfc", "reversible_card", "double_faced_token", "split", "flip"}
+TWO_PART_LAYOUTS = {"split", "flip"}
+
+
+def layout_group(card: dict) -> str:
+    """Room and aftermath are both Scryfall split layouts; never infer them from aspect."""
+    if card["layout"] == "split":
+        if any("Room" in face.get("type_line", "").split() for face in card.get("card_faces", [])):
+            return "room"
+        if "Aftermath" in card.get("keywords", []):
+            return "aftermath"
+    return card["layout"]
+
+
+def face_image_url(card: dict, face: dict) -> str | None:
+    # Same-surface faces have no individual image_uris in all_cards. Its art_crop is a
+    # montage (or a shared illustration), so always cut the normal scan ourselves.
+    if card.get("layout") in TWO_PART_LAYOUTS:
+        return (card.get("image_uris") or {}).get("normal")
+    return (face.get("image_uris") or {}).get("art_crop")
 
 
 def download_bulk(client: httpx.Client, dest: Path) -> Path:
@@ -66,10 +87,16 @@ def usable(card: dict) -> bool:
 
 
 def art_faces(card: dict) -> list[tuple[int, dict]]:
-    """Only separate printed sides get face IDs; adventure/prepare share one top art box."""
+    """Separate arts get face IDs; adventure/prepare share one top art box."""
+    return [(i, face) for i, face in enumerate(supported_faces(card)) if face_image_url(card, face)]
+
+
+def supported_faces(card: dict) -> list[dict]:
     layout = card.get("layout")
     faces = card.get("card_faces", []) if layout in FACE_LAYOUTS else [card] if layout in ART_LAYOUTS else []
-    return [(i, face) for i, face in enumerate(faces) if (face.get("image_uris") or {}).get("art_crop")]
+    # Un/playtest cards with three or five split parts have neither these boxes nor
+    # valid gallery suffixes. Do not quietly download them as two-part cards.
+    return [] if layout in TWO_PART_LAYOUTS and len(faces) != 2 else faces
 
 
 def usable_entries(bulk: Path) -> list[dict]:
@@ -80,7 +107,7 @@ def usable_entries(bulk: Path) -> list[dict]:
             if "paper" not in card.get("games", []) or card.get("digital", False):
                 continue
             layout = card.get("layout")
-            faces = card.get("card_faces", []) if layout in FACE_LAYOUTS else [card] if layout in ART_LAYOUTS else []
+            faces = supported_faces(card)
             for face_index, face in enumerate(faces):
                 printing = {
                     "id": card["id"] if face_index == 0 else f"{card['id']}-{face_index}",
@@ -95,10 +122,18 @@ def usable_entries(bulk: Path) -> list[dict]:
                     "frame_effects": card.get("frame_effects", []),
                     "promo": card.get("promo", False),
                 }
+                if layout in TWO_PART_LAYOUTS:
+                    printing["layout_group"] = layout_group(card)
                 illustration = face.get("illustration_id") or printing["id"]
+                if layout in TWO_PART_LAYOUTS:
+                    # Some printings omit face 1's ID; others repeat face 0's ID there.
+                    # These are regions of one scan, so key both by shared illustration
+                    # plus region. A translation cannot collapse or duplicate a half.
+                    shared = card.get("illustration_id") or face.get("illustration_id") or card["id"]
+                    illustration = f"{shared}:face:{face_index}"
                 group = groups.setdefault(illustration, {"printings": [], "art": None})
                 group["printings"].append(printing)
-                url = (face.get("image_uris") or {}).get("art_crop")
+                url = face_image_url(card, face)
                 if url and card.get("image_status") in ("highres_scan", "lowres"):
                     art = {**printing, "illustration_id": illustration, "oracle_id": card.get("oracle_id") or face.get("oracle_id"), "url": url}
                     if group["art"] is None or printing_order(art) < printing_order(group["art"]):
@@ -130,7 +165,7 @@ def sample_arts(entries: list[dict], n_train: int, n_eval: int, seed: int) -> li
     return picked
 
 
-METADATA_FIELDS = ("layout", "collector_number", "face", "lang", "illustration_id")
+METADATA_FIELDS = ("layout", "collector_number", "face", "lang", "illustration_id", "layout_group")
 
 
 def add_metadata(arts: list[dict], entries: list[dict]) -> int:
@@ -148,7 +183,7 @@ def add_metadata(arts: list[dict], entries: list[dict]) -> int:
         before = dict(a)
         metadata = {**printing, "illustration_id": e["illustration_id"]}
         for field in METADATA_FIELDS:
-            if field not in a:
+            if field not in a and field in metadata:
                 a[field] = metadata[field]
         a["printings"] = e["printings"]
         if a != before:
@@ -185,7 +220,17 @@ def fetch_image(client: httpx.Client, entry: dict, dest_dir: Path = ART_DIR, url
         time.sleep(REQUEST_GAP_S)
         if r.status_code != 200:
             return entry["id"], False
-        dest.write_bytes(r.content)
+        if url_key == "url" and entry.get("layout") in TWO_PART_LAYOUTS:
+            card = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
+            if card is None:
+                return entry["id"], False
+            frame = frame_of(1, entry["layout"], entry["face"], entry["layout_group"])
+            ok, image = cv2.imencode(".jpg", frame_crop(card, frame), [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not ok:
+                return entry["id"], False
+            dest.write_bytes(image.tobytes())
+        else:
+            dest.write_bytes(r.content)
         return entry["id"], True
     except httpx.HTTPError:
         return entry["id"], False

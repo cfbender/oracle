@@ -34,15 +34,34 @@ FRAMES = {
     "right": (0.502, 0.112, 0.922),
     "left": (0.074, 0.112, 0.494),
 }
+# Boxes measured on Scryfall's portrait normal scans, not the sideways reading orientation.
+# Flip cards share a central illustration; use its left/right regions, not the rules boxes.
+TWO_PART_BOXES = {
+    "room_0": (0.135, 0.485, 0.535, 0.910),
+    "room_1": (0.135, 0.050, 0.535, 0.475),
+    # Interior common to Apocalypse, Dragon's Maze and modern split treatments.
+    "split_0": (0.160, 0.565, 0.490, 0.900),
+    "split_1": (0.160, 0.095, 0.490, 0.430),
+    "aftermath_0": (0.075, 0.115, 0.925, 0.335),
+    "aftermath_1": (0.550, 0.565, 0.830, 0.915),
+    "flip_0": (0.085, 0.315, 0.490, 0.655),
+    "flip_1": (0.510, 0.315, 0.915, 0.655),
+}
+FRAMES.update({name: box[:3] for name, box in TWO_PART_BOXES.items()})
 FRAME_NAMES = list(FRAMES)
 # representative art aspect (width / height) per frame, for the query-side cut
 FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415}
+# Counter-clockwise quarter turns from printed scan to upright gallery art.
+FRAME_ROTATIONS = {"room_0": 3, "room_1": 3, "split_0": 3, "split_1": 3, "aftermath_1": 1, "flip_1": 2}
+for _name, (_x0, _y0, _x1, _y1) in TWO_PART_BOXES.items():
+    _aspect = (_x1 - _x0) * CARD_W / ((_y1 - _y0) * CARD_H)
+    FRAME_ASPECT[_name] = 1 / _aspect if FRAME_ROTATIONS.get(_name, 0) % 2 else _aspect
 HALF_LEFT_LAYOUTS = {"class", "case"}
 # Frame prior. tall/right/left arts are 1-2% of the gallery, but at webcam quality their cuts of
 # an ordinary card are extra lottery tickets: a full-art Plains or a saga beat the truth by 0.01 in
 # real evals while, on clean scans, no rare-frame impostor comes close. Rare-frame candidates must
 # therefore beat the standard-frame ones by this margin (subtracted from their similarity).
-RARE_FRAMES = frozenset({"tall", "right", "left"})
+RARE_FRAMES = frozenset({"tall", "right", "left", *TWO_PART_BOXES})
 FRAME_PENALTY = 0.02
 
 
@@ -53,12 +72,14 @@ def frame_penalties(frames: np.ndarray, penalty: float = FRAME_PENALTY) -> np.nd
     return np.where(rare[frames], penalty, 0.0).astype(np.float32)
 
 
-def frame_of(aspect: float, layout: str | None = None) -> str:
+def frame_of(aspect: float, layout: str | None = None, face: int = 0, layout_group: str | None = None) -> str:
     """Frame name for a gallery art from its image aspect (width / height) and, for the
     half-width frames, the Scryfall layout (sagas put the art on the right, class and case
     cards on the left; without a layout assume saga, they outnumber the others 5:1).
     DFC sides are classified independently: ordinary transform/MDFC backs (~1.37) are
     modern, not half-width; showcase/extended/token faces still use their own aspect."""
+    if layout in {"split", "flip"}:
+        return f"{layout_group or layout}_{face}"
     if aspect < 0.6:
         return "left" if layout in HALF_LEFT_LAYOUTS else "right"
     if aspect < 1.1:
@@ -73,6 +94,8 @@ def frame_of(aspect: float, layout: str | None = None) -> str:
 def frame_box(frame: str, aspect: float | None = None) -> tuple[float, float, float, float]:
     """(x0, y0, x1, y1) of a frame's art box as fractions of the card, its height from the
     art's aspect (the frame's representative aspect when not given)."""
+    if frame in TWO_PART_BOXES:
+        return TWO_PART_BOXES[frame]
     x0, y0, x1 = FRAMES[frame]
     aspect = aspect or FRAME_ASPECT[frame]
     return x0, y0, x1, y0 + (x1 - x0) * CARD_W / aspect / CARD_H
@@ -150,11 +173,18 @@ def card_orientations(card: np.ndarray) -> list[np.ndarray]:
     return [card, cv2.rotate(card, cv2.ROTATE_180)]
 
 
+def frame_crop(card: np.ndarray, frame: str) -> np.ndarray:
+    """Native-resolution upright art; shared by gallery downloads and query crops."""
+    h, w = card.shape[:2]
+    x0, y0, x1, y1 = frame_box(frame)
+    art = card[int(y0 * h) : int(y1 * h), int(x0 * w) : int(x1 * w)]
+    return np.ascontiguousarray(np.rot90(art, FRAME_ROTATIONS.get(frame, 0)))
+
+
 def art_crop(card: np.ndarray, frame: str = "modern") -> np.ndarray:
     """The recogniser's input for one frame: that frame's art box cut from the canonical card
     and squashed to the square input the same way the gallery art_crop is."""
-    x0, y0, x1, y1 = frame_box(frame)
-    art = card[int(y0 * CARD_H) : int(y1 * CARD_H), int(x0 * CARD_W) : int(x1 * CARD_W)]
+    art = frame_crop(card, frame)
     return cv2.resize(art, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
 
 

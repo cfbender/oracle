@@ -46,7 +46,7 @@ def art_frames(arts: list[dict]) -> np.ndarray:
         aspect = w / h
         if aspect < 0.6 and "layout" not in a:
             unknown_half += 1
-        frames.append(FRAME_NAMES.index(frame_of(aspect, a.get("layout"))))
+        frames.append(FRAME_NAMES.index(frame_of(aspect, a.get("layout"), a.get("face", 0), a.get("layout_group"))))
     if unknown_half:
         print(
             f"{unknown_half} half-width arts without a layout in arts.json, treated as sagas; run `python -m cardid.scryfall --layouts` to tell class/case cards apart"
