@@ -5,7 +5,7 @@
 
 `--real` mixes the train split of real webcam captures labeled with `cardid.capture` into
 each epoch (oversampled `--real-repeat` times, lightly augmented), and the best checkpoint is
-then chosen by top-1 on the held-out real captures instead of the synthetic queries.
+then chosen by top-1 on usable held-out real captures, or synthetic queries if none exist.
 
 Checkpoints to data/runs/<run>/{last,best}.pt; "best" is by eval top-1 on a fixed query set
 drawn from the eval split (unseen arts), which is also what evaluate.py reports.
@@ -115,9 +115,13 @@ def main() -> None:
     frames = None
     if args.real:
         gallery_index = printing_index(arts)
-        queries, targets, _ = real_eval_queries(load_labels("eval"), gallery_index)
-        frames = art_frames(arts)
-        print(f"selecting best checkpoint by top-1 on {len(queries)} held-out real captures")
+        real_eval = [r for r in load_labels("eval") if r["label"] in gallery_index]
+        if real_eval:
+            queries, targets, _ = real_eval_queries(real_eval, gallery_index)
+            frames = art_frames(arts)
+            print(f"selecting best checkpoint by top-1 on {len(queries)} held-out real captures")
+        else:
+            print("no usable held-out real captures; selecting best checkpoint by synthetic top-1")
 
     model = Embedder()
     if args.resume:

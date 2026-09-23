@@ -131,10 +131,15 @@ def pull(real: Path = REAL, server: str | None = None, from_dir: Path | None = N
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["pull", "selftest"])
-    parser.add_argument("--server", default=os.environ.get("CARDID_SERVER"))
-    parser.add_argument("--from-dir", type=Path, default=os.environ.get("CARDID_CORRECTIONS_DIR"))
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--server")
+    source.add_argument("--from-dir", type=Path)
     parser.add_argument("--real-dir", type=Path, default=REAL)
     args = parser.parse_args()
+    if args.server is None and args.from_dir is None:
+        args.server = os.environ.get("CARDID_SERVER")
+        directory = os.environ.get("CARDID_CORRECTIONS_DIR")
+        args.from_dir = Path(directory) if directory else None
     if args.command == "selftest":
         import unittest
 

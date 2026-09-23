@@ -7,55 +7,16 @@ not a historical metric or training accuracy. No new usable corrections means no
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import DATA_DIR, ML_DIR
+from . import DATA_DIR
 from .corrections import REAL, atomic_json, latest_labels, pull
-from .gallery import printing_index
-
-
-def fingerprint(rows: list[dict]) -> str:
-    return hashlib.sha256(json.dumps(sorted(rows, key=lambda r: r["capture_id"]), sort_keys=True).encode()).hexdigest()
-
-
-def publish_allowed(new_data: bool, baseline: dict, candidate: dict) -> bool:
-    return (
-        new_data
-        and baseline["count"] > 0
-        and baseline["count"] == candidate["count"]
-        and baseline["captures"] == candidate["captures"]
-        and 0 <= baseline["correct"] <= candidate["correct"] <= candidate["count"]
-    )
-
-
-def command(*args: str) -> None:
-    print("+", " ".join(args), flush=True)
-    subprocess.run(args, cwd=ML_DIR, check=True)
-
-
-def score(bundle_path: Path, rows: list[dict], real: Path) -> dict:
-    from .bundle import Bundle
-    from .degrade import load_rgb
-
-    bundle = Bundle(bundle_path)
-    gallery = printing_index(bundle.arts)
-    missing = {r["label"] for r in rows} - gallery.keys()
-    if missing:
-        raise SystemExit(f"refusing incomparable evaluation: {len(missing)} held-out labels missing from {bundle_path}")
-    correct = 0
-    for row in rows:
-        crop = load_rgb(real / row["capture_id"] / "crop.jpg")
-        click = tuple(row.get("click") or (crop.shape[1] / 2, crop.shape[0] / 2))
-        prediction = bundle.identify(crop, click)["results"][0]["id"]
-        correct += gallery[prediction] == gallery[row["label"]]
-    return {"correct": correct, "count": len(rows), "top1": correct / len(rows), "captures": fingerprint(rows)}
+from .workflow import command, fingerprint, publish_allowed, resolve_checkpoint, score, snapshot_bundle, trained_checkpoint
 
 
 def run(args: argparse.Namespace) -> None:
@@ -83,32 +44,16 @@ def run(args: argparse.Namespace) -> None:
     if not eval_rows or not any(r["split"] == "train" for r in rows):
         raise SystemExit("need both train and held-out eval captures")
     target = os.environ["CARDID_PUBLISH_TO"].rstrip("/")
-    checkpoint = Path(state.get("checkpoint") or os.environ["CARDID_CHECKPOINT"])
-    detector = Path(os.environ["CARDID_DETECTOR"])
     version = datetime.now(UTC).strftime("nightly-%Y%m%dT%H%M%S%fZ")
     log_path = args.state_dir / f"{version}.json"
     with tempfile.TemporaryDirectory(prefix="cardid-baseline-") as tmp:
-        snapshot = Path(tmp) / "snapshot"
-        command("rsync", "-aL", "--", f"{target}/current/", str(snapshot) + "/")
-        manifest = json.loads((snapshot / "manifest.json").read_text())
-        # Version is used as a local path, so validate before renaming.
-        import re
-
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", manifest["version"]):
-            raise SystemExit("invalid baseline version")
-        baseline_path = snapshot.with_name(manifest["version"])
-        snapshot.rename(baseline_path)
-        from .publish import check_bundle, sha256
-
-        check_bundle(baseline_path)
-        baseline_hash = sha256(baseline_path / "manifest.json")
-        if sha256(checkpoint) != manifest["recogniser"]["sha256"]:
-            raise SystemExit("CARDID_CHECKPOINT/state checkpoint is not the currently published model; update it before retraining")
-        if sha256(detector) != manifest["detector"]["sha256"]:
-            raise SystemExit("CARDID_DETECTOR is not the published detector; refusing a mixed change")
+        baseline_path, manifest, baseline_hash = snapshot_bundle(f"{target}/current", Path(tmp), command)
+        checkpoint_hint = state.get("checkpoint") or os.environ.get("CARDID_CHECKPOINT")
+        detector_hint = state.get("detector") or os.environ.get("CARDID_DETECTOR")
+        checkpoint = resolve_checkpoint("recogniser", DATA_DIR / "runs", manifest, hint=Path(checkpoint_hint) if checkpoint_hint else None, strict=True)
+        detector = resolve_checkpoint("detector", DATA_DIR / "runs", manifest, hint=Path(detector_hint) if detector_hint else None, strict=True)
         baseline = score(baseline_path, eval_rows, args.real_dir)
         print("baseline:", json.dumps(baseline), flush=True)
-        candidate_checkpoint = DATA_DIR / "runs" / version / "best.pt"
         command(
             sys.executable,
             "-m",
@@ -131,6 +76,7 @@ def run(args: argparse.Namespace) -> None:
             "--run",
             version,
         )
+        candidate_checkpoint = trained_checkpoint(DATA_DIR / "runs" / version)
         command(sys.executable, "-m", "cardid.export", "--checkpoint", str(candidate_checkpoint), "--detector", str(detector), "--version", version)
         candidate_bundle = DATA_DIR / "bundles" / version
         candidate = score(candidate_bundle, eval_rows, args.real_dir)
@@ -145,7 +91,7 @@ def run(args: argparse.Namespace) -> None:
         if allowed:
             command(sys.executable, "-m", "cardid.publish", str(candidate_bundle), "--to", target, "--expected-current", baseline_hash)
             checkpoint = candidate_checkpoint
-        atomic_json(state_path, {"corrections": digest, "checkpoint": str(checkpoint), "report": str(log_path)})
+        atomic_json(state_path, {"corrections": digest, "checkpoint": str(checkpoint), "detector": str(detector), "report": str(log_path)})
         print("PUBLISHED (previous retained)" if allowed else "REFUSED: held-out top-1 regressed")
 
 

@@ -4,6 +4,75 @@ Offline tooling for the webcam table's click-to-identify feature. Nothing here r
 Phoenix app; it produces numbers (go/no-go) and a versioned runtime bundle (three ONNX graphs
 plus the gallery index, see [Shipping](#shipping-export-publish-refresh)) that the browser loads.
 
+## One command
+
+From the **repository root** on the Linux/RX 9070 XT desktop (existing gallery and training
+checkpoints required), first-time setup:
+
+```sh
+mise install && mise exec -- uv sync --project ml --extra rocm
+mkdir -p ~/.config; test -e ~/.config/cardid.env || install -m 600 ml/nightly.env.example ~/.config/cardid.env
+${EDITOR:-nano} ~/.config/cardid.env
+```
+
+Set `CARDID_SERVER=https://your-server`, `CARDID_CORRECTIONS_TOKEN` (the server's read-only
+export token), and `CARDID_PUBLISH_TO=user@host:/srv/the-gathering/cardid`. `rsync` and SSH
+access are required. The file uses literal `KEY=value` assignments; quote spaces, do not use
+shell expansion. Existing environment values override the file, and flags override both.
+`CARDID_ENV_FILE` / `--env-file` selects another file. Tokens never appear in command logs.
+
+```sh
+mise run ml:retrain -- --dry-run             # resolve models and inspect the plan first
+mise run ml:retrain                         # pull → gallery refresh → 4 epochs → export/verify → evaluate → publish
+mise run ml:retrain -- --detector-epochs 4    # also fine-tune the resolved detector
+mise run ml:retrain -- --no-publish          # train/export/evaluate for review, leave server and nightly state alone
+mise run ml:retrain -- --from-dir /mnt/cardid/corrections --no-update-gallery --epochs 2
+mise run ml:evaluate -- --method checkpoint --checkpoint data/runs/full-3/best.pt --profile realistic
+mise run ml:export -- --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
+mise run ml:publish -- data/bundles/<version> --to nuc:/srv/the-gathering/cardid
+mise run ml:update-gallery
+mise run ml:test
+```
+
+All tasks run in `ml/`, forward arguments after `--`, and preserve the installed torch extra
+with `uv run --no-sync`. Use `--extra cpu` instead of `rocm` for CPU-only setup. The step tasks
+are thin wrappers; **only `ml:retrain` reads the env file and orchestrates a gated publication**.
+Manual commands below remain useful for individual experiments.
+
+Retrain prefers SHA256 matches to the server's `current/manifest.json` across
+`data/runs/*/{best,last}.pt`. If unreachable, it warns and uses the newest local bundle
+manifest by mtime. If no checkpoint matches, it warns and selects the newest checkpoint of
+the right model type (tensor names, not run-directory names). `--checkpoint` / `--detector`
+always win; old `CARDID_CHECKPOINT` / `CARDID_DETECTOR` paths are additional search hints,
+not overrides of the published hashes. To use an unpublished detector experiment explicitly:
+`mise run ml:retrain -- --detector data/runs/det-two-part/last.pt`.
+
+Usable, gallery-backed train captures enable `--real`; otherwise training is synthetic-only.
+Train captures without real eval captures still mix into training, with synthetic checkpoint
+selection. Both trainers use their new run's `best.pt`, or `last.pt` if no epoch beats the
+starting model. `--epochs` defaults to 4 (`CARDID_RETRAIN_EPOCHS`); nightly's `CARDID_EPOCHS=2`
+does not change it. `--workers` overrides `CARDID_WORKERS`, otherwise trainers choose for the
+device. Other trainer hyperparameters use their normal defaults, not nightly's reduced rates.
+
+Export always verifies 64 scenes. When held-out real captures exist, both ONNX bundles are
+scored on the same raw crops using nightly's non-regression gate. A regression refuses
+publication unless `--force`; missing labels, missing baselines, incomparable datasets,
+export parity failures, changed labels or a changed server manifest cannot be forced.
+Without held-out captures, retrain warns and permits publication with **no real accuracy
+guarantee**; synthetic realistic top-1/top-5 are printed on every completed evaluation.
+Use `--no-publish` to inspect results first. A local fallback manifest still supplies the
+`--expected-current` publish guard; if it is not what the server serves, publication refuses.
+
+Each run, including failures and dry runs, writes `data/retrain/<timestamp>.json` with commands,
+selected paths, evaluation/gate results and publication status. Successful publication updates
+nightly's checkpoint and detector paths without resetting its seen-corrections fingerprint.
+Retrain shares nightly's lock, but has no automatic timer, nice level or two-hour time limit.
+Do not run other trainers/importers concurrently. Dry runs only read local data/checkpoints
+and fetch the current manifest; they do **not** pull corrections or refresh the gallery, so
+the real run can choose `--real` differently after importing. Their shell-variable assignments
+show the exact best/last choice that depends on future training output. No model scores are
+invented. Reports and the lock are the only persistent dry-run writes.
+
 The recognizer is a metric-learning CNN: a MobileNetV3-Small backbone maps the art box of a
 card to a 128-d unit vector, and identification is cosine nearest-neighbor against one vector
 per distinct Scryfall illustration (~52k). Each artwork carries its paper printing choices;
@@ -198,7 +267,8 @@ without embedder retraining, but the low end-to-end smoke scores do **not** esta
 production readiness. Evaluate the production pair before publishing; first investigate
 detector corners/orientation if that gap remains, rather than blindly retraining the embedder.
 
-Run on the training box from `ml/` (use your actual checkpoint/detector paths):
+For the full retraining cycle, use [One command](#one-command). To evaluate/export the
+existing weights without training, run on the training box from `ml/` (use your actual paths):
 
 ```sh
 uv sync --extra rocm
@@ -463,6 +533,9 @@ real webcam crops versus the synthetic degradation. Those are the next runs.
 
 ## Shipping: export, publish, refresh
 
+For pull → retrain → evaluate → publish, use [One command](#one-command). These individual
+commands remain available for gallery-only exports and manual review.
+
 The app never sees checkpoints. It loads a **bundle**: a versioned directory of three ONNX
 graphs plus the gallery index, built once on the training machine and copied to the server.
 
@@ -613,7 +686,8 @@ general API token. Disabling/demoting that admin or rotating the token revokes i
 cookie sessions can also export. The API returns up to 50 rows at
 `GET /api/cardid/corrections?cursor=N` and JPEGs at `/api/cardid/corrections/:id/crop`.
 
-On the **Linux/ROCm desktop**, from `ml/`:
+Prefer [One command](#one-command) for the complete desktop loop. For individual steps on
+the **Linux/ROCm desktop**, from `ml/`:
 
 ```sh
 uv sync --extra rocm                              # once
@@ -650,6 +724,9 @@ restarting; browsers pick it up on their next table load.
 
 ### Optional nightly loop (or the same guarded run by hand)
 
+For the on-demand four-epoch cycle with gallery refresh and optional detector training, use
+[One command](#one-command). Nightly deliberately retains its stricter correction-only gates.
+
 `bash nightly.sh` runs pull → merge → resume training → export/parity check → held-out
 evaluation → conditional publish. Unlike the individual commands above, it gates publication.
 It deliberately does **not** run `scryfall --update`: gallery-only changes would otherwise
@@ -683,9 +760,11 @@ this is a non-regression check, not a statistical guarantee of improvement.
 No new usable correction/relabel since the last completed run means **no training or publish**.
 This also works if corrections were pulled manually earlier. Rejected candidates mark that
 dataset as seen; failures/timeouts do not. Dry runs never mark data as trained. The current
-best checkpoint and seen fingerprint live in `data/nightly/state.json`; after publishing a
-model outside this loop, update its `checkpoint` (or remove the state and set
-`CARDID_CHECKPOINT`) to match. Logs and exact correct/count/top-1 values live in
+best checkpoint and seen fingerprint live in `data/nightly/state.json`. Nightly now resolves
+local checkpoints against the published manifest, so stale environment/state paths do not
+block it after a manual publish; **it still refuses when no local model matches either hash**.
+`ml:retrain` updates both paths automatically after publishing. Keep matching checkpoint files
+on the desktop. Logs and exact correct/count/top-1 values live in
 `data/nightly/YYYY-MM-DD.log` and per-run JSON reports. A lock prevents overlapping runs;
 dataset changes or a changed published manifest abort publication. Keep previous checkpoints
 and bundles for rollback. Do not run another label importer/trainer during this job.
