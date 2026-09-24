@@ -23,6 +23,8 @@ import httpx
 import numpy as np
 from PIL import Image
 
+from .constants import CARD_ASPECT
+
 JSON_MAX_BYTES = 32 * 1024 * 1024  # an API page of 175 cards is well under 2 MB
 BULK_MAX_BYTES = 2 * 1024**3  # all_cards.jsonl.gz is ~400 MB
 IMAGE_MAX_BYTES = 8 * 1024 * 1024  # art crops and normal scans are 50-300 KB
@@ -158,7 +160,7 @@ def decode_image(data: bytes, *, card: bool = False) -> np.ndarray:
         raise DownloadError(f"unexpected image format {fmt}")
     if not (IMAGE_MIN_SIDE <= min(w, h) and max(w, h) <= IMAGE_MAX_SIDE):
         raise DownloadError(f"unexpected image size {w}x{h}")
-    if card and abs((h / w) / (88 / 63) - 1) > CARD_ASPECT_TOLERANCE:
+    if card and abs((h / w) / CARD_ASPECT - 1) > CARD_ASPECT_TOLERANCE:
         raise DownloadError(f"{w}x{h} is not a portrait card scan")
     image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if image is None or image.shape[:2] != (h, w):

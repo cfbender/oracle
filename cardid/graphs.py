@@ -27,15 +27,14 @@ import numpy as np
 import torch
 from torch import nn
 
+from .constants import CARD_ASPECT, DET_INPUT, ROTATIONS
 from .data import IMAGENET_MEAN, IMAGENET_STD
 from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_ROTATIONS, frame_box
-from .detector import CARD_ASPECT, HEAT_SIZE, HEAT_STRIDE, CornerNet
+from .detector import HEAT_SIZE, HEAT_STRIDE, CornerNet
 from .model import Embedder
-from .synth import DET_INPUT
 
 SNAP_THRESHOLD = 0.3
-ROTATIONS = 4
 
 
 def _normalise(rgba_hwc: torch.Tensor) -> torch.Tensor:

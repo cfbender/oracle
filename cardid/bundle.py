@@ -8,8 +8,9 @@ Per click, mirroring `Detector.locate_up` + `capture.Session.identify`:
 1. Resample the SCENE (640) px square around the click to 256x256 (`synth.window_around`, an
    affine scale + translation with edge replication) and run detector.onnx. Map its quad,
    centre and short side back to image pixels through the inverse affine.
-2. Second pass on a window of side max(short * 88/63 / 0.6, 64) px around that centre, so the
-   card spans ~60% of the input; its quad is the answer, its up vote is |up| / 4.
+2. Second pass on a window of side max(short * CARD_ASPECT / REFINE_FILL, REFINE_MIN_SIDE) px
+   (`constants`: 88/63, 0.6, 64) around that centre, so the card's long side spans 60% of the
+   input; its quad is the answer, its up vote is |up| / ROTATIONS.
 3. embed.onnx on the image and the quad -> one embedding per frame cut.
 4. search.onnx -> top-k gallery indices and scores; `arts.json` names them.
 """
@@ -24,12 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .detector import CARD_ASPECT
-from .graphs import ROTATIONS
-from .synth import DET_INPUT, SCENE
-
-REFINE_FILL = 0.6  # the card's long side as a fraction of the refine window
-REFINE_MIN_SIDE = 64.0
+from .constants import CARD_ASPECT, DET_INPUT, REFINE_FILL, REFINE_MIN_SIDE, ROTATIONS, SCENE
 
 
 def rgba(rgb: np.ndarray) -> np.ndarray:

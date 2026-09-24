@@ -31,11 +31,10 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from . import ART_DIR, CACHE_DIR, CARD_DIR
+from .constants import DET_INPUT, SCENE
 from .data import IMAGENET_MEAN, IMAGENET_STD, to_tensor
 from .degrade import load_rgb
 
-SCENE = 640  # native px around the click (capture.html CROP)
-DET_INPUT = 256  # detector input; the scene is downscaled to this
 CORNER_RADIUS = 0.045  # card corner radius as a fraction of the short side (3 mm on 63 mm)
 PRINTED = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])  # unit square in printed order
 

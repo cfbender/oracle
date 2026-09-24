@@ -652,7 +652,7 @@ you pass `--force` for one that was never published:
 | `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores. The gallery (f16 by default, `--gallery-dtype f32`) and the frame prior (`--frame-penalty`, default 0.02) are baked in; `--topk` defaults to 5. |
 | `arts.json` | gallery index order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`, `illustration_id`, crop `url`, `printing_count`. No nested siblings. |
 | `printings.json` | representative art ID → all selectable sibling printing records. Downloaded only on the first gallery search or printing expansion, shared and cached by bundle version. |
-| `manifest.json` | version, checkpoint sha256s, gallery size, every constant the glue code needs (scene 640, detector input 256, refine fill 0.6 / min side 64, card 250×350, art input 128, frame names, opset 17), per-file bytes + sha256. |
+| `manifest.json` | version, checkpoint sha256s, gallery size, every constant the glue code needs (scene 640, detector input 256, rotations 4, refine fill 0.6 / min side 64, card aspect 88/63 — defined once in `cardid/constants.py` — card 250×350, art input 128, frame names, opset 17), per-file bytes + sha256. |
 | `SHA256SUMS` | what `publish` and the server verify. |
 
 Graph sizes at 49k arts: detector 12.6 MB, embed 5.1 MB, search ≈13 MB (f16).

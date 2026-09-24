@@ -36,16 +36,9 @@ import torch
 from torch import nn
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
-from .synth import (
-    DET_INPUT,
-    PRINTED,
-    SCENE,
-    apply_affine,
-    scene_to_input,
-    window_around,
-)
+from .constants import CARD_ASPECT, DET_INPUT, REFINE_FILL, REFINE_MIN_SIDE, ROTATIONS, SCENE
+from .synth import PRINTED, apply_affine, scene_to_input, window_around
 
-CARD_ASPECT = 88 / 63
 RESIDUAL = 0.08  # max per-corner residual as a fraction of the short side
 UNIT_CARD = torch.tensor(PRINTED - 0.5) * torch.tensor([1.0, CARD_ASPECT])  # (4, 2), short side 1
 
@@ -342,15 +335,17 @@ class Detector:
         up = sum(unrotate_direction(u, k) for k, u in enumerate(up.cpu().numpy()))
         return apply_affine(cv2_invert(M), quad), up
 
-    def locate_up(self, img: np.ndarray, click: tuple[float, float], refine: bool = True, snap: bool = False, rotations: int = 4) -> tuple[np.ndarray, float]:
+    def locate_up(
+        self, img: np.ndarray, click: tuple[float, float], refine: bool = True, snap: bool = False, rotations: int = ROTATIONS
+    ) -> tuple[np.ndarray, float]:
         """`locate` plus the up vote: the length of the summed up vector divided by
         `rotations`, in [0, 1]; on validation scenes 0.75+ is right 99.7% of the time and
         below 0.25 only about two thirds."""
         quad, up = self.predict_window(img, click[0], click[1], SCENE)
         if refine:
-            # second pass on a window where the card spans ~60% of the input
+            # second pass on a window where the card's long side spans REFINE_FILL of the input
             cx, cy, short, _ = fit_card_pose(quad)
-            side = max(short * CARD_ASPECT / 0.6, 64.0)
+            side = max(short * CARD_ASPECT / REFINE_FILL, REFINE_MIN_SIDE)
             quad, up = self.predict_window(img, cx, cy, side, rotations)
         if snap:
             quad = card_rect(*fit_card_pose(quad))

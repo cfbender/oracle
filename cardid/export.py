@@ -35,14 +35,13 @@ import numpy as np
 import torch
 
 from . import DATA_DIR
-from .bundle import REFINE_FILL, REFINE_MIN_SIDE
+from .constants import CARD_ASPECT, DET_INPUT, REFINE_FILL, REFINE_MIN_SIDE, ROTATIONS, SCENE
 from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_PENALTY, art_crops, frame_penalties, warp_card
-from .detector import CARD_ASPECT, CornerNet, Detector, load_checkpoint
+from .detector import CornerNet, Detector, load_checkpoint
 from .gallery import runtime_metadata
-from .graphs import ROTATIONS, DetectorGraph, EmbedGraph, SearchGraph
+from .graphs import DetectorGraph, EmbedGraph, SearchGraph
 from .index import ArtIndex
-from .synth import DET_INPUT, SCENE
 
 BUNDLE_DIR = DATA_DIR / "bundles"
 SUMS = "SHA256SUMS"
