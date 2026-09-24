@@ -38,7 +38,7 @@ def main() -> None:
 
     model = Embedder(pretrained=False).eval()
     if args.checkpoint:
-        model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
+        model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     x = torch.randn(1, 3, INPUT_SIZE, INPUT_SIZE)
     with torch.no_grad():
         med, p95 = timeit(lambda: model(x), 50)

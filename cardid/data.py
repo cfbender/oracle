@@ -127,13 +127,43 @@ def build_eval_queries(arts: list[dict], gallery_index: dict[str, int], per_art:
 
 
 def cached_eval_queries(arts_all: list[dict], per_art: int = 3, seed: int = 2024, profile: str = "harsh"):
-    """Gallery = every downloaded art (clean); queries = degraded eval-split arts. Cached on disk."""
+    """Gallery = every downloaded art (clean); queries = degraded eval-split arts. Cached on disk.
+
+    The cache holds only typed arrays (the per-query infos as one JSON string) and is loaded
+    with `allow_pickle=False`, so a planted .npz cannot execute code. Caches written by older
+    versions stored infos as a pickled object array; they are ignored and rebuilt."""
     suffix = "" if profile == "harsh" else f"-{profile}"
     cache = DATA_DIR / f"eval-queries-{gallery_fingerprint(arts_all)}-{per_art}-{seed}{suffix}.npz"
     gallery_index = {a["id"]: i for i, a in enumerate(arts_all)}
-    if cache.exists():
-        z = np.load(cache, allow_pickle=True)
-        return z["images"], z["targets"], list(z["infos"])
+    cached = load_query_cache(cache)
+    if cached is not None:
+        return cached
     images, targets, infos = build_eval_queries(split(arts_all, "eval"), gallery_index, per_art, seed, PROFILES[profile])
-    np.savez(cache, images=images, targets=targets, infos=np.array(infos, dtype=object))
+    save_query_cache(cache, images, targets, infos)
     return images, targets, infos
+
+
+def save_query_cache(path: Path, images: np.ndarray, targets: np.ndarray, infos: list[dict]) -> None:
+    tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
+    np.savez(tmp, images=images, targets=targets, infos_json=np.array(json.dumps(infos, default=_json_scalar)))
+    tmp.replace(path)
+
+
+def load_query_cache(path: Path) -> tuple[np.ndarray, np.ndarray, list[dict]] | None:
+    """(images, targets, infos) from a current-format cache, or None when it is missing or old."""
+    if not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            if "infos_json" not in z.files:
+                raise ValueError("pre-JSON cache format")
+            return z["images"], z["targets"], json.loads(str(z["infos_json"]))
+    except (ValueError, OSError) as error:
+        print(f"ignoring eval-query cache {path.name} ({error}); rebuilding it")
+        return None
+
+
+def _json_scalar(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")

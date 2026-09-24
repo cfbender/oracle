@@ -191,7 +191,7 @@ def main() -> None:
             label = "mobilenetv3-imagenet-untrained"
         else:
             model = Embedder(pretrained=False)
-            model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
+            model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
             label = f"checkpoint:{args.checkpoint}:{profile}"
         model.to(device)
         t0 = time.time()

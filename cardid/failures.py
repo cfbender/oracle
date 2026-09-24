@@ -32,7 +32,7 @@ def main() -> None:
     gallery = gallery_images(arts)
     queries, targets, infos = cached_eval_queries(arts)
     model = Embedder(pretrained=False)
-    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
+    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     g = embed_images(model, gallery)
     q = embed_images(model, queries)
     idx, sims = cosine_topk(q, g, 5)

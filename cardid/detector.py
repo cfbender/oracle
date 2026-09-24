@@ -292,7 +292,7 @@ def load_checkpoint(model: CornerNet, path: Path, device: torch.device) -> None:
     """Load a state dict, tolerating checkpoints saved before the heatmap decoder or the up
     output existed: missing layers keep their fresh initialisation and a shorter final head
     row block is copied into the first rows, so warm-starting still works."""
-    state = torch.load(path, map_location=device)
+    state = torch.load(path, map_location=device, weights_only=True)
     notes = []
     own = model.state_dict()
     for key in ("head.3.weight", "head.3.bias"):

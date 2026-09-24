@@ -29,7 +29,7 @@ class ArtIndex:
         self.checkpoint = Path(checkpoint)
         self.frame_penalty = frame_penalty
         self.model = Embedder(pretrained=False).eval()
-        self.model.load_state_dict(torch.load(self.checkpoint, map_location="cpu"))
+        self.model.load_state_dict(torch.load(self.checkpoint, map_location="cpu", weights_only=True))
         self.arts = load_arts()
         self.by_id = printing_index(self.arts)
         self.frames = art_frames(self.arts)

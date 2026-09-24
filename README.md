@@ -136,7 +136,9 @@ The sampled eval split is preserved while the gallery grows to every downloaded 
 legacy duplicate illustrations are handled as described below. First `gallery_images` call decodes all JPEGs
 (a few minutes) and caches `data/gallery-<fingerprint>.npy` for later runs. Pixel, embedding,
 and eval-query caches include gallery IDs/order/splits, so a deduplication cannot reuse stale
-targets. Older count-only caches can be removed after migration.
+targets. Older count-only caches can be removed after migration. Eval-query caches store
+only typed arrays and load with `allow_pickle=False`; ones written before that (pickled
+object arrays) are ignored and rebuilt once. Checkpoints load with `torch.load(weights_only=True)`.
 
 ### Gallery coverage, printings and face IDs
 

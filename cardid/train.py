@@ -125,7 +125,7 @@ def main() -> None:
 
     model = Embedder()
     if args.resume:
-        model.load_state_dict(torch.load(args.resume, map_location="cpu"))
+        model.load_state_dict(torch.load(args.resume, map_location="cpu", weights_only=True))
     model.to(device)
     arc = ArcFaceHead(len(train_arts)).to(device) if args.arcface > 0 else None
     params = [
