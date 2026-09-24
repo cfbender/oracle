@@ -949,9 +949,15 @@ Use your actual home path. Cron implementations without `CRON_TZ` must use a hos
 of America/New_York; setting `TZ` only for the command does not change scheduling. Do not
 enable both cron and the timer.
 
-CPU-only checks: `uv run ruff check`, `uv run ruff format --check`, and
-`uv run python -m cardid.corrections selftest` cover import/relabel/skip, interrupted HTTP
-pulls, gate boundaries, and local/SSH-shell publication without a GPU or network server.
+CPU-only checks: `uv run ruff check`, `uv run ruff format --check`, and `mise run ml:test`
+(`uv run python -m unittest discover -s cardid -t .`; the tests are plain `unittest`, so
+`uv run --with pytest python -m pytest cardid` also works without adding a dependency). Besides
+import/relabel/skip, interrupted HTTP pulls, gate boundaries and local/SSH-shell publication
+(`uv run python -m cardid.corrections selftest` runs just those), the suite covers the capture
+server's origin/size limits, capped atomic Scryfall downloads, the env-file parser and
+`nightly.sh`, local publish pruning, seeded training setup, and a manifest contract test that
+exports a tiny bundle and checks it against the fields and ONNX names the browser code reads.
+None needs a GPU, a network server or real model weights.
 
 ### Where to train
 
