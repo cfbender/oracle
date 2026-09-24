@@ -17,9 +17,13 @@ ${EDITOR:-nano} ~/.config/cardid.env
 
 Set `CARDID_SERVER=https://your-server`, `CARDID_CORRECTIONS_TOKEN` (the server's read-only
 export token), and `CARDID_PUBLISH_TO=user@host:/srv/the-gathering/cardid`. `rsync` and SSH
-access are required. The file uses literal `KEY=value` assignments; quote spaces, do not use
-shell expansion. Existing environment values override the file, and flags override both.
-`CARDID_ENV_FILE` / `--env-file` selects another file. Tokens never appear in command logs.
+access are required. The file is data, not a shell script: `retrain` and `nightly.sh` both parse
+it with `cardid.envfile` and never `source` it. Use one literal `KEY=value` per line, quote values
+containing spaces, and put comments on their own lines; `$VAR`, `$(...)` and backticks are kept as
+literal text, and a malformed line aborts the run naming its line number. Only `CARDID_*` keys
+are used. Existing environment values override the file, and flags override both.
+`CARDID_ENV_FILE` / `--env-file` selects another file. Tokens never appear in command logs;
+a warning is printed if the file is readable by other users.
 
 ```sh
 mise run ml:retrain -- --dry-run             # resolve models and inspect the plan first
@@ -793,7 +797,8 @@ the **Linux/ROCm desktop**, from `ml/`:
 uv sync --extra rocm                              # once
 install -m 600 nightly.env.example ~/.config/cardid.env  # create ~/.config first if needed
 # Edit ~/.config/cardid.env: server URL, matching token, checkpoint, detector and SSH target.
-set -a; . ~/.config/cardid.env; set +a
+# Load CARDID_* into this shell without executing the file (same parser as retrain/nightly):
+while IFS= read -r -d '' kv; do export "$kv"; done < <(uv run python -m cardid.envfile ~/.config/cardid.env)
 uv run python -m cardid.corrections pull
 uv run python -m cardid.train --resume "$CARDID_CHECKPOINT" --real --epochs 2 --workers 2 --threads 2 --run corrections-1
 uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/corrections-1/best.pt --real

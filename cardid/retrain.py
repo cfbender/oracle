@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import DATA_DIR, ML_DIR
 from .corrections import atomic_json, latest_labels
+from .envfile import load_env
 from .gallery import printing_index
 from .workflow import (
     check_destination,
@@ -27,23 +28,6 @@ from .workflow import (
     snapshot_bundle,
     trained_checkpoint,
 )
-
-
-def load_env(path: Path) -> None:
-    """Read literal shell-style assignments, without executing a secret-bearing file."""
-    if not path.exists():
-        return
-    for number, line in enumerate(path.read_text().splitlines(), 1):
-        words = shlex.split(line, comments=True)
-        if words and words[0] == "export":
-            words = words[1:]
-        if not words:
-            continue
-        if len(words) != 1 or "=" not in words[0]:
-            raise SystemExit(f"{path}:{number}: expected KEY=value (quote spaces; no shell expansion)")
-        key, value = words[0].split("=", 1)
-        if key.startswith("CARDID_"):
-            os.environ.setdefault(key, value)
 
 
 def positive(value: str) -> int:
