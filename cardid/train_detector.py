@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import time
 
 import cv2
@@ -44,10 +43,10 @@ from .detector import (
 )
 from .detector_checkpoint import load_checkpoint
 from .image_bank import TWO_PART_RATE, ArtBank, CardBank
-from .model import describe_device, gpu, pick_device
 from .real import REAL_DIR, load_labels
 from .scene_datasets import RealSceneDataset, SceneDataset, batch_to_input
 from .scene_geometry import quad_short
+from .training_runtime import add_runtime_args, make_loader, setup, write_run_metadata
 
 HIT = 0.05
 
@@ -171,13 +170,10 @@ def main() -> None:
     )
     parser.add_argument("--heat-weight", type=float, default=0.2, help="weight of the corner heatmap focal loss")
     parser.add_argument("--up-weight", type=float, default=1.0, help="weight of the up-vector (which way the card is printed) loss; rendered scenes only")
-    parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)",
+    add_runtime_args(
+        parser,
+        "scene-rendering worker processes (default: half the logical CPUs on CPU, all but one on GPU; on SMT machines one per physical core is usually faster, see bench_loader --detector)",
     )
-    parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
     parser.add_argument(
         "--no-pin", action="store_true", help="do not stage batches in pinned host memory (try if bench_loader shows the loader capped regardless of workers)"
     )
@@ -185,22 +181,13 @@ def main() -> None:
     parser.add_argument("--real", action="store_true", help="mix in the train split of labeled real captures from data/real")
     parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")
     args = parser.parse_args()
-    cv2.setNumThreads(0)
-    device = pick_device(args.device)
-    cores = os.cpu_count() or 8
-    if gpu(device):
-        workers, threads = max(2, cores - 1), 2
-    else:
-        workers, threads = max(2, cores // 2), max(2, cores - cores // 2)
-    args.workers = args.workers or workers
-    args.threads = args.threads or threads
-    torch.set_num_threads(args.threads)
-    torch.manual_seed(0)
-    print(f"device: {describe_device(device)}, {args.workers} rendering workers")
+    runtime = setup(args, "rendering")
+    device = runtime.device
 
     run_dir = RUNS_DIR / args.run
     run_dir.mkdir(parents=True, exist_ok=True)
-    synth = SceneDataset(args.samples)
+    write_run_metadata(run_dir, args, runtime)
+    synth = SceneDataset(args.samples, seed=args.seed)
     train_set = synth
     real_eval = None
     real_sets = []
@@ -208,23 +195,14 @@ def main() -> None:
     if eval_rows:
         real_eval = RealSceneDataset(eval_rows, augment=False)
     if args.real:
-        real_train = RealSceneDataset(load_labels("train"), repeat=args.real_repeat)
+        real_train = RealSceneDataset(load_labels("train"), repeat=args.real_repeat, seed=args.seed + 1)
         if not len(real_train):
             raise SystemExit("--real: no labeled captures with quads in data/real")
         real_sets.append(real_train)
         print(f"real captures: {len(real_train.rows)} train x{args.real_repeat}, {len(eval_rows)} eval")
         train_set = ConcatDataset([synth, real_train])
-    loader = DataLoader(
-        train_set,
-        batch_size=args.batch,
-        shuffle=True,
-        num_workers=args.workers,
-        worker_init_fn=worker_init,
-        drop_last=True,
-        persistent_workers=True,
-        pin_memory=device.type == "cuda" and not args.no_pin,
-    )
-    scenes, quads, groups = val_scenes(args.val, args.workers)
+    loader = make_loader(train_set, args.batch, runtime, pin_memory=runtime.pin_memory and not args.no_pin)
+    scenes, quads, groups = val_scenes(args.val, runtime.workers)
     if not synth.cards.two_part:
         print("WARNING: no two-part scans; run python -m cardid.scryfall --two-part-cards")
 

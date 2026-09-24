@@ -137,7 +137,8 @@ original module kept as the CLI and a re-exporting facade:
 - `detector` (CornerNet, losses, two-pass inference) with `detector_checkpoint` (loading older
   head layouts) and `detector_overlay` (the `python -m cardid.detector` overlay CLI).
 - `constants` holds the detector/refine geometry the manifest ships to the browser;
-  `envfile` parses `~/.config/cardid.env`.
+  `training_runtime` holds device, worker/thread, seed, DataLoader and run-metadata setup for
+  both trainers; `envfile` parses `~/.config/cardid.env`.
 
 ## Full catalog (bigger machine)
 
@@ -446,6 +447,14 @@ shows one card above the margin and top-3 below it; it never shows "no match".
 uv run python -m cardid.train --epochs 12 --batch 128 --run m0
 uv run python -m cardid.bench --checkpoint data/runs/m0/best.pt      # per-click CPU latency
 ```
+
+Both trainers take `--seed` (default 0, the previous fixed seed). It seeds Python, NumPy,
+torch and the DataLoader's shuffle/worker generators, and the per-sample augmentation of the
+synthetic and real datasets. Fixed evaluation sets (eval queries, detector validation scenes)
+keep their own seeds so scores stay comparable across seeds. Each run writes
+`data/runs/<run>/run.json` with its arguments, seed, resolved device/workers/threads and the
+Python, torch, torchvision, NumPy and OpenCV versions. A `--resume`d recogniser no longer loads
+ImageNet weights first, so resuming needs no torchvision weight download.
 
 Exporting a checkpoint for the app is covered in [Shipping](#shipping-export-publish-refresh).
 

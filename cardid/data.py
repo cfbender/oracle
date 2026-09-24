@@ -64,11 +64,17 @@ def to_tensor(rgb_uint8: np.ndarray) -> torch.Tensor:
 
 def worker_init(_worker_id: int) -> None:
     """DataLoader workers do augmentation only; keep each one single-threaded so N workers
-    plus the main process's torch threads do not oversubscribe the cores."""
+    plus the main process's torch threads do not oversubscribe the cores. Global Python and
+    NumPy generators follow the worker's torch seed, which the loader's generator derives."""
+    import random
+
     import cv2
 
     cv2.setNumThreads(1)
     torch.set_num_threads(1)
+    seed = torch.initial_seed() % 2**32
+    random.seed(seed)
+    np.random.seed(seed)
 
 
 class PairDataset(Dataset):

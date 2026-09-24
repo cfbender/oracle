@@ -433,7 +433,7 @@ class RetrainTest(unittest.TestCase):
             with self.subTest(eval_rows=eval_rows), ExitStack() as stack:
                 stack.enter_context(patch("sys.argv", ["train", "--real", "--run", "selection-test", "--workers", "1", "--threads", "1"]))
                 stack.enter_context(patch.object(train, "RUNS_DIR", self.runs))
-                for name in ("PairDataset", "RealDataset", "DataLoader", "gallery_images", "art_frames"):
+                for name in ("PairDataset", "RealDataset", "make_loader", "gallery_images", "art_frames"):
                     stack.enter_context(patch.object(train, name))
                 stack.enter_context(patch.object(train, "load_arts", return_value=arts))
                 stack.enter_context(patch.object(train, "load_labels", side_effect=lambda split, rows=eval_rows: rows if split == "eval" else []))
@@ -443,6 +443,7 @@ class RetrainTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "stop before model construction"):
                     train.main()
                 self.assertEqual(real_eval.call_count, expected_calls)
+                self.assertEqual(json.loads((self.runs / "selection-test" / "run.json").read_text())["seed"], 0)
 
     def test_nightly_resolves_published_pair_despite_stale_state_and_env(self):
         rows = self.real_rows()

@@ -15,21 +15,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 
-import cv2
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset
 from tqdm import tqdm
 
 from . import RUNS_DIR
-from .data import PairDataset, art_frames, cached_eval_queries, gallery_images, load_arts, split, worker_init
+from .data import PairDataset, art_frames, cached_eval_queries, gallery_images, load_arts, split
 from .evaluate import cosine_topk, embed_images, frame_topk
 from .gallery import printing_index
-from .model import ArcFaceHead, Embedder, describe_device, gpu, info_nce, pick_device
+from .model import ArcFaceHead, Embedder, info_nce
 from .real import RealDataset, load_labels, real_eval_queries
+from .training_runtime import add_runtime_args, make_loader, setup, write_run_metadata
 
 
 def quick_eval(model: Embedder, gallery: np.ndarray, queries: np.ndarray, targets: np.ndarray, frames: np.ndarray | None = None) -> float:
@@ -54,58 +53,32 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--backbone-lr", type=float, default=3e-4)
     parser.add_argument("--temperature", type=float, default=0.05)
-    parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
-    parser.add_argument("--workers", type=int, help="augmentation worker processes (default: half the cores on CPU, all but one on GPU)")
-    parser.add_argument("--threads", type=int, help="torch intra-op threads (default: the other half of the cores on CPU, 2 on GPU)")
+    add_runtime_args(parser, "augmentation worker processes (default: half the cores on CPU, all but one on GPU)")
     parser.add_argument("--arcface", type=float, default=0.0, help="weight of the ArcFace class loss (0 disables)")
     parser.add_argument("--resume")
     parser.add_argument("--real", action="store_true", help="mix in labeled real captures from data/real")
     parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")
     args = parser.parse_args()
-    # The DataLoader forks its workers after the parent may have used OpenCV (loading real
-    # captures). OpenCV's thread pool does not survive fork() and the children deadlock, so
-    # keep the parent's OpenCV single-threaded; torch does the parent's heavy lifting anyway.
-    cv2.setNumThreads(0)
     if args.real and args.arcface > 0:
         parser.error("--real cannot be combined with --arcface (real labels may fall outside the train split)")
-    device = pick_device(args.device)
-    # Augmentation (worker processes) and the model's forward/backward (torch threads) run
-    # concurrently. On CPU they share the cores, so split them; on GPU the model needs almost
-    # no CPU and augmentation is the bottleneck, so it gets nearly everything.
-    cores = os.cpu_count() or 8
-    if gpu(device):
-        workers, threads = max(2, cores - 1), 2
-    else:
-        workers, threads = max(2, cores // 2), max(2, cores - cores // 2)
-    args.workers = args.workers or workers
-    args.threads = args.threads or threads
-    torch.set_num_threads(args.threads)
-    torch.manual_seed(0)
-    print(f"device: {describe_device(device)}, {args.workers} augmentation workers")
+    runtime = setup(args, "augmentation")
+    device = runtime.device
 
     run_dir = RUNS_DIR / args.run
     run_dir.mkdir(parents=True, exist_ok=True)
+    write_run_metadata(run_dir, args, runtime)
     arts = load_arts()
     train_arts = split(arts, "train")
-    dataset = PairDataset(train_arts)
+    dataset = PairDataset(train_arts, seed=args.seed)
     train_set = dataset
     real_sets = []
     if args.real:
         # Labels are only consumed by ArcFace, which --real excludes, so index over every art.
-        real_train = RealDataset(load_labels("train"), arts, repeat=args.real_repeat)
+        real_train = RealDataset(load_labels("train"), arts, repeat=args.real_repeat, seed=args.seed + 1)
         real_sets.append(real_train)
         print(f"real captures: {len(real_train.rows)} train x{args.real_repeat}, {len(load_labels('eval'))} eval")
         train_set = ConcatDataset([dataset, real_train])
-    loader = DataLoader(
-        train_set,
-        batch_size=args.batch,
-        shuffle=True,
-        num_workers=args.workers,
-        worker_init_fn=worker_init,
-        drop_last=True,
-        persistent_workers=True,
-        pin_memory=device.type == "cuda",
-    )
+    loader = make_loader(train_set, args.batch, runtime)
 
     gallery = gallery_images(arts)
     queries, targets, _ = cached_eval_queries(arts)
@@ -123,7 +96,8 @@ def main() -> None:
         else:
             print("no usable held-out real captures; selecting best checkpoint by synthetic top-1")
 
-    model = Embedder()
+    # ImageNet weights only for a fresh start; a resumed run overwrites every tensor anyway.
+    model = Embedder(pretrained=args.resume is None)
     if args.resume:
         model.load_state_dict(torch.load(args.resume, map_location="cpu", weights_only=True))
     model.to(device)
