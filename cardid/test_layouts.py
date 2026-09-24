@@ -103,7 +103,9 @@ class LayoutTest(unittest.TestCase):
         }
         with (
             tempfile.TemporaryDirectory() as temp,
-            httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=encoded.tobytes()))) as client,
+            httpx.Client(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, content=encoded.tobytes(), headers={"content-type": "image/png"}))
+            ) as client,
         ):
             root = Path(temp)
             with patch.object(scryfall, "REQUEST_GAP_S", 0):

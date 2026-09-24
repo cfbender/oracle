@@ -26,11 +26,23 @@ from pathlib import Path
 
 import cv2
 import httpx
-import numpy as np
 from tqdm import tqdm
 
 from . import ART_DIR, CARD_DIR, DATA_DIR
 from .detect import frame_crop, frame_of
+from .downloads import (
+    BULK_MAX_BYTES,
+    GZIP_TYPES,
+    IMAGE_MAX_BYTES,
+    IMAGE_TYPES,
+    DownloadError,
+    decode_image,
+    download_file,
+    fetch_bytes,
+    fetch_json,
+    validate_gzip_jsonl,
+    write_atomic,
+)
 
 BULK_URL = "https://api.scryfall.com/bulk-data"
 HEADERS = {
@@ -67,17 +79,29 @@ def face_image_url(card: dict, face: dict) -> str | None:
 
 
 def download_bulk(client: httpx.Client, dest: Path) -> Path:
+    """The all-cards bulk file. An existing file is reused only if it is a complete gzip
+    stream (older versions could leave a truncated one behind); new downloads are capped,
+    type-checked, verified and renamed into place, so an interrupted run leaves nothing."""
     if dest.exists():
-        return dest
-    meta = client.get(BULK_URL).raise_for_status().json()
+        try:
+            validate_gzip_jsonl(dest)
+            return dest
+        except DownloadError as error:
+            print(f"discarding {dest.name}: {error}")
+            dest.unlink()
+    meta = fetch_json(client, BULK_URL)
     entry = next(e for e in meta["data"] if e["type"] == "all_cards")
-    with client.stream("GET", entry["jsonl_download_uri"]) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        with dest.open("wb") as f, tqdm(total=total, unit="B", unit_scale=True, desc="bulk") as bar:
-            for chunk in r.iter_bytes(1 << 16):
-                f.write(chunk)
-                bar.update(len(chunk))
+    with tqdm(total=entry.get("compressed_size"), unit="B", unit_scale=True, desc="bulk") as bar:
+        download_file(
+            client,
+            entry["jsonl_download_uri"],
+            dest,
+            max_bytes=BULK_MAX_BYTES,
+            content_types=GZIP_TYPES,
+            validate=validate_gzip_jsonl,
+            progress=lambda n, _total: bar.update(n),
+            timeout=120,
+        )
     return dest
 
 
@@ -250,27 +274,27 @@ def extend_to_all(existing: list[dict], entries: list[dict], excluded: set[str] 
 
 
 def fetch_image(client: httpx.Client, entry: dict, dest_dir: Path = ART_DIR, url_key: str = "url") -> tuple[str, bool]:
+    """Download one image to `<dest_dir>/<id>.jpg`: capped, checked to decode at a plausible
+    size (a portrait card for full scans), written atomically. Existing files are kept."""
     dest = dest_dir / f"{entry['id']}.jpg"
     if dest.exists():
         return entry["id"], True
+    full_card = url_key == "card_url" or entry.get("layout") in TWO_PART_LAYOUTS
     try:
-        r = client.get(entry[url_key], timeout=30)
-        time.sleep(REQUEST_GAP_S)
-        if r.status_code != 200:
-            return entry["id"], False
+        try:
+            data = fetch_bytes(client, entry[url_key], max_bytes=IMAGE_MAX_BYTES, content_types=IMAGE_TYPES, timeout=30)
+        finally:
+            time.sleep(REQUEST_GAP_S)
+        image = decode_image(data, card=full_card)
         if url_key == "url" and entry.get("layout") in TWO_PART_LAYOUTS:
-            card = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
-            if card is None:
-                return entry["id"], False
             frame = frame_of(1, entry["layout"], entry["face"], entry["layout_group"])
-            ok, image = cv2.imencode(".jpg", frame_crop(card, frame), [cv2.IMWRITE_JPEG_QUALITY, 95])
+            ok, encoded = cv2.imencode(".jpg", frame_crop(image, frame), [cv2.IMWRITE_JPEG_QUALITY, 95])
             if not ok:
                 return entry["id"], False
-            dest.write_bytes(image.tobytes())
-        else:
-            dest.write_bytes(r.content)
+            data = encoded.tobytes()
+        write_atomic(dest, data)
         return entry["id"], True
-    except httpx.HTTPError:
+    except (httpx.HTTPError, DownloadError):
         return entry["id"], False
 
 
@@ -297,7 +321,7 @@ def download_two_part_cards(client: httpx.Client) -> None:
     params = {"q": "(layout:split or layout:flip) game:paper include:multilingual", "unique": "prints"}
     cards = []
     while url:
-        page = client.get(url, params=params).raise_for_status().json()
+        page = fetch_json(client, url, params=params)
         cards.extend(page["data"])
         url = page.get("next_page") if page.get("has_more") else None
         params = None
@@ -380,9 +404,15 @@ def main() -> None:
         return
     with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
         bulk_path = DATA_DIR / "all-cards.jsonl.gz"
+        previous = bulk_path.with_suffix(".gz.previous")
         if args.update and bulk_path.exists():
-            bulk_path.replace(bulk_path.with_suffix(".gz.previous"))  # keep one for a diff or a rollback
-        bulk = download_bulk(client, bulk_path)
+            bulk_path.replace(previous)  # keep one for a diff or a rollback
+        try:
+            bulk = download_bulk(client, bulk_path)
+        except (httpx.HTTPError, DownloadError) as error:
+            if args.update and previous.exists() and not bulk_path.exists():
+                previous.replace(bulk_path)  # the failed refresh must not cost the working copy
+            raise SystemExit(f"bulk download failed: {error}") from None
         arts = json.loads(arts_path.read_text()) if arts_path.exists() else None
         if args.metadata:
             if arts is None:

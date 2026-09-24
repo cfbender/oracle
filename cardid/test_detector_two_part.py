@@ -81,7 +81,7 @@ class DetectorTwoPartTest(unittest.TestCase):
                 return httpx.Response(200, json={"data": [printing()], "has_more": True, "next_page": "https://pages.test/2"})
             if request.url.host == "pages.test":
                 return httpx.Response(200, json={"data": [printing("flip", layout="flip")], "has_more": False})
-            return httpx.Response(503 if fail and request.url.path == "/flip" else 200, content=encoded.tobytes())
+            return httpx.Response(503 if fail and request.url.path == "/flip" else 200, content=encoded.tobytes(), headers={"content-type": "image/png"})
 
         (self.root / "ordinary.jpg").write_bytes(b"existing")
         with (

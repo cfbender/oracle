@@ -707,6 +707,13 @@ uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector 
 uv run python -m cardid.publish data/bundles/<version> --to nuc:/srv/the-gathering/cardid
 ```
 
+All Scryfall downloads (`cardid.downloads`) are HTTPS-only, streamed with byte caps (JSON pages
+32 MB, the bulk file 2 GB, images 8 MB), content-type checked, validated (the bulk file must be a
+complete gzip JSON-lines stream, images must decode at a plausible size, full-card scans must be
+portrait 63×88), then written under a temporary name and renamed into place. An interrupted run
+leaves no partial file, and an existing bulk file that fails the gzip check is discarded and
+downloaded again. A failed `--update` restores the previous bulk file.
+
 `--update` keeps the previous bulk file as `all-cards.jsonl.gz.previous`, refreshes sibling
 metadata, preserves existing art IDs and splits, and appends new illustrations as train.
 The one-time duplicate-illustration migration described above removes aliases from the
