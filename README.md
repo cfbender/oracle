@@ -874,7 +874,27 @@ on the desktop. Logs and exact correct/count/top-1 values live in
 dataset changes or a changed published manifest abort publication. Keep previous checkpoints
 and bundles for rollback. Do not run another label importer/trainer during this job.
 
-Optional **user systemd units** assume checkout `~/the-gathering` (edit paths if different):
+Optional **user systemd units** assume checkout `~/the-gathering` (edit paths if different).
+Run them under a **dedicated unprivileged account** (for example `cardid`) that owns only the
+checkout, its `ml/data`, `~/.config/cardid.env` and an SSH key authorised for the publish
+target, rather than your everyday login: a compromised dependency or model file then cannot
+reach your own files or keys. As that user (`sudo loginctl enable-linger cardid`, then
+`sudo machinectl shell cardid@`), clone the repository, run `mise install` / `uv sync --extra rocm`,
+create `ml/data`, and `ssh` to the publish host once to accept its key; add the account to the
+`render`/`video` groups if ROCm needs them for `/dev/kfd`.
+
+The service is sandboxed: `NoNewPrivileges`, `PrivateTmp`, `UMask=0077`,
+`ProtectSystem=strict` with `ReadWritePaths=%h/the-gathering/ml/data` (everything the job writes:
+nightly logs/lock/state, pulled corrections, runs, bundles, caches), and `ProtectHome=read-only`
+so the checkout, env file and `~/.ssh` stay readable for rsync/ssh publication. `ml/data` must
+exist before the first run. uv's cache goes to the private `/tmp` and MIOpen's kernel cache to
+`ml/data/cache/miopen`. In a user unit these settings imply `PrivateUsers=true`, which needs
+unprivileged user namespaces enabled in the kernel. Because home is read-only, SSH cannot record
+new host keys or create `ControlMaster` sockets under `~/.ssh` (point `ControlPath` at `/tmp` or
+disable multiplexing for the publish host), and a local-directory `CARDID_PUBLISH_TO` needs a
+drop-in adding it to `ReadWritePaths=`. The unit has no `EnvironmentFile=`; `nightly.sh` reads
+the env file itself with the literal parser described in [One command](#one-command).
+
 
 ```sh
 mkdir -p ~/.config/systemd/user
