@@ -38,7 +38,8 @@ from . import DATA_DIR
 from .constants import CARD_ASPECT, DET_INPUT, REFINE_FILL, REFINE_MIN_SIDE, ROTATIONS, SCENE
 from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_PENALTY, art_crops, frame_penalties, warp_card
-from .detector import CornerNet, Detector, load_checkpoint
+from .detector import CornerNet, Detector
+from .detector_checkpoint import load_checkpoint
 from .gallery import runtime_metadata
 from .graphs import DetectorGraph, EmbedGraph, SearchGraph
 from .index import ArtIndex
@@ -167,7 +168,8 @@ def verify(bundle_path: Path, index: ArtIndex, det: Detector, n: int, seed: int,
     agrees on at least 97% of the scenes where the torch pipeline's top-1 leads its runner-up
     by more than `CLEAR_MARGIN`; every disagreement is listed."""
     from .bundle import Bundle
-    from .synth import ArtBank, CardBank, render_scene
+    from .image_bank import ArtBank, CardBank
+    from .scene_renderer import render_scene
 
     bundle = Bundle(bundle_path)
     cards, arts = CardBank(), ArtBank()

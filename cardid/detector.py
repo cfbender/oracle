@@ -25,6 +25,9 @@ another text-heavy art than the right way up does against its own art.
 
 Inference is two-stage: the pose from the 640px click window, then the same network on a
 tight window around that estimate, where 1% of the input is a couple of native pixels.
+
+Checkpoint loading (including older head layouts) is `detector_checkpoint`; the overlay CLI
+behind `python -m cardid.detector` is `detector_overlay`.
 """
 
 from __future__ import annotations
@@ -37,7 +40,9 @@ from torch import nn
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 from .constants import CARD_ASPECT, DET_INPUT, REFINE_FILL, REFINE_MIN_SIDE, ROTATIONS, SCENE
-from .synth import PRINTED, apply_affine, scene_to_input, window_around
+from .detector_checkpoint import load_checkpoint
+from .scene_datasets import scene_to_input
+from .scene_geometry import PRINTED, apply_affine, window_around
 
 RESIDUAL = 0.08  # max per-corner residual as a fraction of the short side
 UNIT_CARD = torch.tensor(PRINTED - 0.5) * torch.tensor([1.0, CARD_ASPECT])  # (4, 2), short side 1
@@ -281,28 +286,6 @@ def cyclic_order(quad: np.ndarray) -> np.ndarray:
     return np.roll(q, -int(np.argmin(q.sum(axis=1))), axis=0).astype(np.float32)
 
 
-def load_checkpoint(model: CornerNet, path: Path, device: torch.device) -> None:
-    """Load a state dict, tolerating checkpoints saved before the heatmap decoder or the up
-    output existed: missing layers keep their fresh initialisation and a shorter final head
-    row block is copied into the first rows, so warm-starting still works."""
-    state = torch.load(path, map_location=device, weights_only=True)
-    notes = []
-    own = model.state_dict()
-    for key in ("head.3.weight", "head.3.bias"):
-        if key in state and state[key].shape != own[key].shape:
-            merged = own[key].clone()
-            merged[: state[key].shape[0]] = state[key]
-            notes.append(f"{key} widened {state[key].shape[0]} -> {own[key].shape[0]} outputs (pre-up detector), new rows left at init")
-            state[key] = merged
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if unexpected:
-        raise RuntimeError(f"{path}: unexpected keys {sorted(unexpected)[:5]}")
-    if missing:
-        notes.append(f"{len(missing)} keys not in checkpoint (pre-heatmap detector), left at init")
-    for note in notes:
-        print(f"{path}: {note}")
-
-
 class Detector:
     """Loads a CornerNet checkpoint and locates the card under a click in a full frame."""
 
@@ -375,47 +358,7 @@ def cv2_invert(M: np.ndarray) -> np.ndarray:
     return np.hstack([Ainv, (-Ainv @ t)[:, None]]).astype(np.float32)
 
 
-def main() -> None:
-    """Overlay the learned (green) and classical (blue) quads for clicks on a screenshot.
-
-    python -m cardid.detector --checkpoint data/runs/det/best.pt --image frame.png \
-        --click 660,350 --click 1120,480 --out /tmp/overlay.jpg
-    """
-    import argparse
-
-    import cv2
-
-    from .detect import find_card_quad
-
-    ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--image", required=True)
-    ap.add_argument("--click", action="append", required=True, help="x,y in image pixels; repeatable")
-    ap.add_argument("--out", required=True, help="output image (jpg/png)")
-    ap.add_argument("--snap", action="store_true", help="snap the learned quad to an exact 63x88 rectangle")
-    args = ap.parse_args()
-
-    img = cv2.cvtColor(cv2.imread(args.image), cv2.COLOR_BGR2RGB)
-    detector = Detector(args.checkpoint)
-    vis = img.copy()
-    for spec in args.click:
-        x, y = (int(v) for v in spec.split(","))
-        classical = find_card_quad(img, (x, y))
-        if classical is not None:
-            cv2.polylines(vis, [classical.astype(np.int32)], True, (60, 120, 255), 3)
-        learned = detector.locate(img, (x, y), snap=args.snap)
-        cv2.polylines(vis, [learned.astype(np.int32)], True, (40, 230, 60), 3)
-        cv2.circle(vis, tuple(learned[0].astype(int)), 10, (255, 40, 40), -1)  # printed top-left
-        cv2.circle(vis, (x, y), 8, (255, 255, 0), -1)
-        cx, cy, short, angle = fit_card_pose(learned)
-        up = (learned[0] + learned[1]) / 2 - learned.mean(axis=0)
-        classical_note = "found" if classical is not None else "none"
-        print(
-            f"click ({x},{y}): learned centre=({cx:.0f},{cy:.0f}) short={short:.0f}px angle={angle:.0f}deg up={np.degrees(np.arctan2(up[1], up[0])):.0f}deg; classical {classical_note}"
-        )
-    cv2.imwrite(args.out, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-    print(f"wrote {args.out}")
-
-
 if __name__ == "__main__":
+    from .detector_overlay import main
+
     main()

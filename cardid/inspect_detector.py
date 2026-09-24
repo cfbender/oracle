@@ -19,9 +19,12 @@ import cv2
 import numpy as np
 import torch
 
-from .detector import CornerNet, corner_error, fit_card_pose, load_checkpoint
+from .constants import DET_INPUT
+from .detector import CornerNet, corner_error, fit_card_pose
+from .detector_checkpoint import load_checkpoint
 from .model import pick_device
-from .synth import DET_INPUT, batch_to_input, quad_short
+from .scene_datasets import batch_to_input
+from .scene_geometry import quad_short
 from .train_detector import HIT, predict_scenes, val_scenes
 
 GROSS = 0.25  # relative corner error above which the pose was on the wrong object or turned 90 degrees

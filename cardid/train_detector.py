@@ -27,6 +27,7 @@ from torch.utils.data import ConcatDataset, DataLoader
 from tqdm import tqdm
 
 from . import DATA_DIR, RUNS_DIR
+from .constants import DET_INPUT
 from .data import worker_init
 from .detector import (
     CornerNet,
@@ -35,16 +36,18 @@ from .detector import (
     corner_loss,
     heat_loss,
     heat_targets,
-    load_checkpoint,
     pose_loss,
     quad_to_pose,
     snap_corners,
     up_loss,
     up_targets,
 )
+from .detector_checkpoint import load_checkpoint
+from .image_bank import TWO_PART_RATE, ArtBank, CardBank
 from .model import describe_device, gpu, pick_device
 from .real import REAL_DIR, load_labels
-from .synth import DET_INPUT, TWO_PART_RATE, ArtBank, CardBank, RealSceneDataset, SceneDataset, batch_to_input, quad_short
+from .scene_datasets import RealSceneDataset, SceneDataset, batch_to_input
+from .scene_geometry import quad_short
 
 HIT = 0.05
 

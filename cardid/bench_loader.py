@@ -19,6 +19,7 @@ import cv2
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from .constants import DET_INPUT
 from .data import (
     PairDataset,
     cached_eval_queries,
@@ -40,7 +41,7 @@ from .detector import (
 )
 from .evaluate import embed_images
 from .model import Embedder, describe_device, gpu, info_nce, pick_device, sync
-from .synth import DET_INPUT, SceneDataset
+from .scene_datasets import SceneDataset
 
 
 def bench_loader(dataset: Dataset, workers: int, batch: int, batches: int, pin: bool, single_ms: float | None = None) -> None:

@@ -13,7 +13,8 @@ import time
 import cv2
 import numpy as np
 
-from .synth import ArtBank, CardBank, render_scene
+from .image_bank import ArtBank, CardBank
+from .scene_renderer import render_scene
 
 
 def main() -> None:

@@ -124,6 +124,21 @@ torch lives in the mutually exclusive `cpu` and `rocm` extras, so `uv sync` need
 once. Export `UV_NO_SYNC=1` for subsequent `uv run` calls so they retain that extra.
 A plain `uv sync` (no extra) removes torch again.
 
+### Code layout
+
+Entry points stay `python -m cardid.<module>`. Larger modules are split by concern, with the
+original module kept as the CLI and a re-exporting facade:
+
+- `scryfall` (HTTP downloads, image processing, CLI) over `catalog` (card records → `arts.json`
+  entries and migrations) and `downloads` (capped, validated, atomic HTTPS downloads).
+- `synth` (scene sheet CLI) over `image_bank` (decoded card/art banks), `scene_geometry`
+  (quads and windows), `scene_renderer` (compositing, webcam photometrics) and
+  `scene_datasets` (torch datasets, input normalisation).
+- `detector` (CornerNet, losses, two-pass inference) with `detector_checkpoint` (loading older
+  head layouts) and `detector_overlay` (the `python -m cardid.detector` overlay CLI).
+- `constants` holds the detector/refine geometry the manifest ships to the browser;
+  `envfile` parses `~/.config/cardid.env`.
+
 ## Full catalog (bigger machine)
 
 The 6k sample is enough to compare methods; the full gallery is ~52k artworks, which

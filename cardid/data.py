@@ -14,10 +14,10 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from . import ART_DIR, DATA_DIR
+from .catalog import embeds
 from .degrade import PROFILES, Degradation, clean_view, degraded_view, load_rgb
 from .detect import FRAME_NAMES, frame_of
 from .gallery import gallery_fingerprint
-from .scryfall import embeds
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)

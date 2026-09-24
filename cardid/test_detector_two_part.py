@@ -11,7 +11,7 @@ import httpx
 import numpy as np
 import torch
 
-from . import scryfall, synth, train_detector
+from . import scene_datasets, scryfall, synth, train_detector
 from .evaluate_layouts import detector_geometry
 from .test_scryfall import ABRADE
 
@@ -161,7 +161,7 @@ class DetectorTwoPartTest(unittest.TestCase):
             patch.object(train_detector, "CardBank", side_effect=lambda: bank),
             patch.object(train_detector, "ArtBank", side_effect=lambda: arts),
             patch.object(synth.ImageBank, "build"),
-            patch.object(synth, "render_scene", return_value=(image, quad)) as render,
+            patch.object(scene_datasets, "render_scene", return_value=(image, quad)) as render,
         ):
             np.savez(self.root / "det-val-8-999.npz", scenes=["stale"], quads=["stale"])
             first = train_detector.val_scenes(8, 0)

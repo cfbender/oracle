@@ -14,15 +14,19 @@ import numpy as np
 import torch
 
 from . import ART_DIR, DATA_DIR
+from .catalog import usable_entries
+from .constants import SCENE
 from .data import art_frames, art_path, load_arts
 from .degrade import PROFILES, clean_view, degraded_view, load_rgb
 from .detect import art_crops, warp_card
 from .detector import Detector
 from .evaluate import cosine_topk, topk
 from .gallery import printing_index
+from .image_bank import ArtBank, CardBank
 from .index import ArtIndex, frame_similarities
-from .scryfall import HEADERS, WORKERS, fetch_image, usable_entries
-from .synth import SCENE, ArtBank, CardBank, quad_short, render_scene
+from .scene_geometry import quad_short
+from .scene_renderer import render_scene
+from .scryfall import HEADERS, WORKERS, fetch_image
 
 GROUPS = ("room", "split", "aftermath", "flip")
 GEOMETRY_CLASSES = ("ok", "perpendicular", "rot180", "other")

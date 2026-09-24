@@ -70,7 +70,8 @@ class CheckpointLoadTest(unittest.TestCase):
     def test_detector_checkpoints_load_weights_only_and_refuse_pickled_code(self):
         import torch
 
-        from .detector import CornerNet, load_checkpoint
+        from .detector import CornerNet
+        from .detector_checkpoint import load_checkpoint
 
         with tempfile.TemporaryDirectory() as temp:
             good, evil = Path(temp) / "good.pt", Path(temp) / "evil.pt"

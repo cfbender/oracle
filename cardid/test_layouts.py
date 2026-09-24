@@ -20,7 +20,7 @@ from .detect import CARD_H, CARD_W, FRAME_NAMES, art_crops, frame_crop, frame_of
 from .export import export_graph
 from .graphs import EmbedGraph, SearchGraph
 from .real import art_from_card
-from .synth import draw_card
+from .scene_renderer import draw_card
 from .test_scryfall import ABRADE
 
 

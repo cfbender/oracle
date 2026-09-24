@@ -127,7 +127,7 @@ def real_detector_queries(rows: list[dict], gallery_index: dict[str, int], locat
     decides which one counts (see `evaluate`)."""
     from .detect import card_orientations, warp_card
     from .detector import corner_error
-    from .synth import quad_short
+    from .scene_geometry import quad_short
 
     images, targets, infos = [], [], []
     for r in rows:
