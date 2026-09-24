@@ -16,15 +16,21 @@ Everything labeled lands in data/real/ (see `cardid.real`) for `train --real` an
 `evaluate --real`. The page keeps a running top-1/top-5 over what you have labeled.
 
 Stdlib http.server only, so this adds no dependencies; localhost is a secure context for
-getUserMedia in Chrome, so no TLS is needed.
+getUserMedia in Chrome, so no TLS is needed. The server binds to loopback and only accepts
+same-origin JSON requests with bounded bodies and image sizes (see `make_handler`); a
+non-loopback `--host` requires `--allow-remote`.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import io
+import ipaddress
 import itertools
 import json
+import math
 import threading
 import time
 import uuid
@@ -36,6 +42,7 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 import numpy as np
 import torch
+from PIL import Image
 
 from . import ART_DIR
 from .detect import (
@@ -217,16 +224,83 @@ def png_b64(rgb: np.ndarray) -> str:
     return base64.b64encode(buf.tobytes()).decode()
 
 
-def decode_jpeg_b64(data: str) -> np.ndarray:
-    raw = np.frombuffer(base64.b64decode(data.split(",", 1)[-1]), np.uint8)
-    bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise ValueError("could not decode image")
+# Request limits. The page posts a 640 px JPEG crop (a manual quad on a 4K frame can ask for
+# up to ~5,000 px); anything larger is not a webcam crop.
+MAX_BODY_BYTES = 24 * 1024 * 1024
+MAX_IMAGE_SIDE = 6144
+MAX_IMAGE_PIXELS = MAX_IMAGE_SIDE * MAX_IMAGE_SIDE
+IMAGE_FORMATS = {"JPEG", "PNG"}
+LABEL_METHODS = {"confirm", "search", "skip"}
+REQUEST_TIMEOUT_S = 30
+LOOPBACK_NAMES = ("localhost", "127.0.0.1", "[::1]")
+
+# PIL refuses to open anything past twice this (DecompressionBombError); the explicit
+# dimension check below rejects everything past it before either decoder allocates pixels.
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
+class RequestError(Exception):
+    """A rejected request: HTTP status plus a message for the page."""
+
+    def __init__(self, status: HTTPStatus, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def decode_image_b64(data: str) -> np.ndarray:
+    """RGB uint8 from a base64 (optionally data-URL) JPEG/PNG, refusing oversized images from
+    the header alone, before any pixels are decoded."""
+    if not isinstance(data, str):
+        raise RequestError(HTTPStatus.BAD_REQUEST, "image must be a base64 string")
+    try:
+        raw = base64.b64decode(data.split(",", 1)[-1], validate=True)
+    except (binascii.Error, ValueError):
+        raise RequestError(HTTPStatus.BAD_REQUEST, "image is not valid base64") from None
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            fmt, (w, h) = im.format, im.size
+    except (OSError, Image.DecompressionBombError):
+        raise RequestError(HTTPStatus.BAD_REQUEST, "could not read image header") from None
+    if fmt not in IMAGE_FORMATS:
+        raise RequestError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, f"image must be JPEG or PNG, not {fmt}")
+    if w > MAX_IMAGE_SIDE or h > MAX_IMAGE_SIDE or w * h > MAX_IMAGE_PIXELS:
+        raise RequestError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"image {w}x{h} exceeds {MAX_IMAGE_SIDE} px per side")
+    bgr = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if bgr is None or bgr.shape[:2] != (h, w):
+        raise RequestError(HTTPStatus.BAD_REQUEST, "could not decode image")
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-def make_handler(session: Session):
+def finite_points(value, n: int, name: str) -> list[list[float]]:
+    """`n` finite (x, y) pairs, or a 400."""
+    try:
+        points = [[float(v) for v in p] for p in value]
+    except (TypeError, ValueError):
+        raise RequestError(HTTPStatus.BAD_REQUEST, f"{name} must be {n} [x, y] pairs") from None
+    if len(points) != n or any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in points):
+        raise RequestError(HTTPStatus.BAD_REQUEST, f"{name} must be {n} finite [x, y] pairs")
+    return points
+
+
+def loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def make_handler(session: Session, allow_remote: bool = False):
+    """Request handler for `session`. Every request must name the server's own loopback
+    origin in `Host` (DNS-rebinding guard) and, when a browser sends one, `Origin`; POSTs must
+    carry that `Origin`, `Content-Type: application/json` and a bounded `Content-Length`.
+    With `allow_remote` the Host allowlist is dropped (the LAN name is unknown), but the
+    Origin must still equal the Host the request was sent to."""
+
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_TIMEOUT_S  # a stalled client cannot pin a server thread forever
+
         def log_message(self, fmt, *args):  # quiet
             pass
 
@@ -235,6 +309,7 @@ def make_handler(session: Session):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
@@ -243,10 +318,59 @@ def make_handler(session: Session):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
+        def allowed_hosts(self) -> set[str]:
+            port = self.server.server_address[1]
+            return {f"{name}:{port}" for name in LOOPBACK_NAMES}
+
+        def check_origin(self, require: bool) -> None:
+            host = (self.headers.get("Host") or "").strip().lower()
+            if not allow_remote and host not in self.allowed_hosts():
+                raise RequestError(HTTPStatus.FORBIDDEN, "request Host is not this server's loopback address")
+            origin = self.headers.get("Origin")
+            if origin is None:
+                if require:
+                    raise RequestError(HTTPStatus.FORBIDDEN, "missing Origin")
+                return
+            if not host or origin.strip().lower() != f"http://{host}":
+                raise RequestError(HTTPStatus.FORBIDDEN, "cross-origin request refused")
+
+        def read_json(self) -> dict:
+            if self.headers.get("Transfer-Encoding"):
+                raise RequestError(HTTPStatus.LENGTH_REQUIRED, "send a Content-Length, not a chunked body")
+            if self.headers.get_content_type() != "application/json":
+                raise RequestError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                raise RequestError(HTTPStatus.LENGTH_REQUIRED, "Content-Length required") from None
+            if length < 0:
+                raise RequestError(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
+            if length > MAX_BODY_BYTES:
+                raise RequestError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"body exceeds {MAX_BODY_BYTES} bytes")
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise RequestError(HTTPStatus.BAD_REQUEST, "truncated body")
+            try:
+                body = json.loads(raw or b"{}")
+            except (UnicodeDecodeError, ValueError):
+                raise RequestError(HTTPStatus.BAD_REQUEST, "body is not JSON") from None
+            if not isinstance(body, dict):
+                raise RequestError(HTTPStatus.BAD_REQUEST, "body must be a JSON object")
+            return body
+
+        def refuse(self, error: RequestError) -> None:
+            self.close_connection = True  # an unread body must not be parsed as the next request
+            self.send_json({"error": str(error)}, error.status)
+
         def do_GET(self):
+            try:
+                self.check_origin(require=False)
+            except RequestError as e:
+                return self.refuse(e)
             url = urlparse(self.path)
             if url.path == "/":
                 self.send_bytes(PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -262,23 +386,29 @@ def make_handler(session: Session):
             elif url.path == "/stats":
                 self.send_json(session.stats())
             elif url.path == "/search":
-                self.send_json(session.search(parse_qs(url.query).get("q", [""])[0]))
+                self.send_json(session.search(parse_qs(url.query).get("q", [""])[0][:200]))
             else:
                 self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def do_POST(self):
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length) or b"{}")
             try:
+                self.check_origin(require=True)
+                body = self.read_json()
                 if self.path == "/identify":
-                    crop = decode_jpeg_b64(body["image"])
-                    click = (float(body["click"][0]), float(body["click"][1]))
-                    self.send_json(session.identify(crop, click, body.get("quad")))
+                    crop = decode_image_b64(body.get("image"))
+                    (click,) = finite_points([body.get("click")], 1, "click")
+                    quad = finite_points(body["quad"], 4, "quad") if body.get("quad") else None
+                    self.send_json(session.identify(crop, (click[0], click[1]), quad))
                 elif self.path == "/label":
-                    row = session.label(body["capture_id"], body.get("label"), body.get("method", "confirm"))
+                    capture_id, label, method = body.get("capture_id"), body.get("label"), body.get("method", "confirm")
+                    if not isinstance(capture_id, str) or not (label is None or isinstance(label, str)) or method not in LABEL_METHODS:
+                        raise RequestError(HTTPStatus.BAD_REQUEST, "expected capture_id, label (string or null) and a known method")
+                    row = session.label(capture_id, label, method)
                     self.send_json({"saved": row, "stats": session.stats()})
                 else:
                     self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            except RequestError as e:
+                self.refuse(e)
             except KeyError as e:
                 self.send_json({"error": f"unknown or expired capture {e}"}, HTTPStatus.GONE)
             except Exception as e:  # surface to the page instead of dying
@@ -292,7 +422,12 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--detector", help="CornerNet checkpoint from cardid.train_detector; omit to use the classical edge finder")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1", help="bind address; must be loopback unless --allow-remote")
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="allow a non-loopback --host: anyone who can reach the port can label data and read the gallery (no authentication)",
+    )
     parser.add_argument(
         "--frame-penalty",
         type=float,
@@ -300,9 +435,17 @@ def main() -> None:
         help=f"similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})",
     )
     args = parser.parse_args()
+    remote = not loopback_host(args.host)
+    if remote and not args.allow_remote:
+        parser.error(f"--host {args.host} is not a loopback address; pass --allow-remote to expose this unauthenticated tool to the network")
+    if remote:
+        print(
+            f"WARNING: serving on {args.host} without authentication; anyone who can reach port {args.port} can label captures. "
+            "Host-header checks are off; cross-origin requests are still refused. Browsers only allow the camera on localhost or HTTPS."
+        )
     torch.set_num_threads(2)
     session = Session(Path(args.checkpoint), Path(args.detector) if args.detector else None, args.frame_penalty)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(session))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(session, allow_remote=remote))
     locator = f"detector {args.detector}" if args.detector else "classical edge finder"
     print(f"gallery: {len(session.index.arts)} arts; quads from {locator}; open http://{args.host}:{args.port}")
     try:

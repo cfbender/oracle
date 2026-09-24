@@ -440,6 +440,15 @@ and evaluation data.
 uv run python -m cardid.capture --checkpoint data/runs/full/best.pt     # then open http://localhost:8765
 ```
 
+The server has no authentication, so it binds to `127.0.0.1` and refuses anything that is not
+the page it served: the `Host` header must be `localhost`, `127.0.0.1` or `[::1]` on its port
+(DNS-rebinding guard), POSTs must carry the matching `Origin` and `Content-Type: application/json`
+(so another website cannot post a `text/plain` or form body to it), bodies are capped at 24 MB
+and images at 6144 px per side (checked from the JPEG/PNG header before decoding). A
+non-loopback `--host` is refused unless you also pass `--allow-remote`, which prints a warning,
+drops the Host allowlist and still requires same-origin requests. Browsers only grant camera
+access on localhost or HTTPS, so remote use needs your own TLS proxy anyway.
+
 Keys: `1`–`5` confirm a candidate, `/` search by name (add a set code to narrow a basic or
 staple with hundreds of printings, and a collector number to pick one of a set's many:
 `forest fin`, `forest fin 280`; results show `#number`), `S` skip, `F` flip to the other
