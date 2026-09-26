@@ -441,6 +441,32 @@ uv run python -m cardid.evaluate --method checkpoint --checkpoint data/runs/m0/b
 answers are right; `coverage_at_99pct_precision` is how often a click clears it. The UI
 shows one card above the margin and top-3 below it; it never shows "no match".
 
+### Deck-list prior
+
+When the clicked board's owner has a linked Moxfield, Archidekt or ManaVault list, the table
+adds `DECK_PRIOR` (`assets/react/src/features/webcam-table/deck-hint.ts`, currently 0.03) to the
+similarity of every top-5 candidate in that list, re-ranks, and then applies the usual
+`CLEAR_MARGIN` (0.08) rule. `--deck-prior` replays that over the evaluation queries for a sweep
+of priors:
+
+```sh
+uv run python -m cardid.evaluate --method checkpoint --checkpoint "$CARDID_CHECKPOINT" --real --detector "$CARDID_DETECTOR" --deck-prior
+```
+
+Use `--real --detector`: `CLEAR_MARGIN` was chosen on real captures with the detector, so
+synthetic queries say little about it. Each query is scored twice: **in list** (the card is in
+the owner's list, the other 99 cards are random gallery names) and **off list** (the card is
+not in the list, as with a stolen card or an outdated list, but its strongest wrong candidate is:
+the worst case for the prior). The **mixed** columns weight them with `--off-list-share`
+(default 10%). For each prior the table shows top-1, the share of clicks recorded without
+asking, and the share recorded without asking *and wrong*.
+
+The suggested prior has the best mixed top-1, subject to two limits: mixed auto-record
+precision stays within 0.5 pt of no prior, and off-list silent mistakes rise by at most 1 pt.
+Change `DECK_PRIOR` only on that evidence, and record the run (bundle version, capture count,
+chosen prior) here. The sweep is post-hoc like the app, so a deck card outside the bundle's
+top five cannot be recovered by any prior.
+
 ## Train
 
 ```sh

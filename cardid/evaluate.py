@@ -21,6 +21,7 @@ import time
 import numpy as np
 import torch
 
+from . import deck_prior
 from .data import art_frames, cached_eval_queries, gallery_images, load_arts, to_tensor
 from .degrade import PROFILES
 from .detect import FRAME_NAMES, FRAME_PENALTY, frame_penalties
@@ -151,6 +152,17 @@ def main() -> None:
         default=FRAME_PENALTY,
         help=f"with --real: similarity penalty for rare-frame (tall/saga/class) arts, 0 disables the frame prior (default {FRAME_PENALTY})",
     )
+    parser.add_argument(
+        "--deck-prior",
+        action="store_true",
+        help="also sweep the webcam table's deck-list prior (DECK_PRIOR in deck-hint.ts) over these queries; see cardid.deck_prior",
+    )
+    parser.add_argument(
+        "--off-list-share",
+        type=float,
+        default=0.1,
+        help="with --deck-prior: share of clicks on cards outside the owner's list (stolen, copied, outdated list) in the mixed summary",
+    )
     parser.add_argument("--device", default="auto", help="auto (GPU if available), cpu, or cuda (also AMD/ROCm)")
     args = parser.parse_args()
     torch.set_num_threads(os.cpu_count() or 8)
@@ -228,6 +240,9 @@ def main() -> None:
         report(idx, sims, targets, infos, label)
         if args.real:
             print_misses(idx, sims, targets, infos, arts, frames)
+        if args.deck_prior:
+            rows = deck_prior.sweep(idx, sims, targets, [art["name"] for art in arts], off_list_share=args.off_list_share)
+            deck_prior.print_sweep(rows, args.off_list_share)
 
 
 def classical_locate(crop: np.ndarray, click: tuple[float, float]) -> np.ndarray:
