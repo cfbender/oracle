@@ -6,8 +6,9 @@ plus the gallery index, see [Shipping](#shipping-export-publish-refresh)) that t
 
 ## One command
 
-From the **repository root** on the Linux/RX 9070 XT desktop (existing gallery and training
-checkpoints required), first-time setup:
+From the **repository root** on the Linux/RX 9070 XT desktop (existing gallery required;
+without local training runs, retrain starts from the committed
+[starting weights](#starting-weights)), first-time setup:
 
 ```sh
 mise install && mise exec -- uv sync --project ml --extra rocm
@@ -123,6 +124,34 @@ uv run python -m cardid.degrade <art_id>       # visual check of the synthetic w
 torch lives in the mutually exclusive `cpu` and `rocm` extras, so `uv sync` needs one of them
 once. Export `UV_NO_SYNC=1` for subsequent `uv run` calls so they retain that extra.
 A plain `uv sync` (no extra) removes torch again.
+
+### Starting weights
+
+`models/` holds the checkpoints behind production bundle `retrain-20260925T043526910942Z`
+(51,417 arts, published 2026-09-25; held-out real top-1 69/73 = 94.5% against 63/73 for
+the previous bundle), so a fresh clone can fine-tune, evaluate or export without training
+from scratch:
+
+| file | model | source run |
+|---|---|---|
+| `models/recogniser.pt` (4.1 MB) | `Embedder` (MobileNetV3-S, 128-d) | `retrain-20260925T043526910942Z/best.pt` |
+| `models/detector.pt` (12.5 MB) | `CornerNet` (pose + heatmap + up) | `retrain-20260923T215913520025Z-detector/best.pt` (unchanged by the 09-25 retrain) |
+
+Both are plain CPU `state_dict`s, loaded with `weights_only=True` like every other checkpoint.
+`sha256sum -c models/SHA256SUMS` checks them; the hashes equal that bundle's `manifest.json`,
+so `retrain` and `nightly` also accept them as a manifest match for that published version.
+Pass them anywhere a run path works:
+
+```sh
+uv run python -m cardid.train --resume models/recogniser.pt --epochs 4 --run my-first
+uv run python -m cardid.train_detector --resume models/detector.pt --epochs 4 --run my-det
+uv run python -m cardid.export --checkpoint models/recogniser.pt --detector models/detector.pt
+```
+
+`nightly.env.example` points `CARDID_CHECKPOINT`/`CARDID_DETECTOR` here. Only the
+checkpoints are committed: the gallery (`scryfall`), real captures and bundles stay in the
+ignored `data/`. Replace these files only with a published pair, update `SHA256SUMS` and the
+table in the same commit, and keep them small (each version stays in Git history).
 
 ### Code layout
 
