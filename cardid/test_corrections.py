@@ -19,7 +19,7 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from .corrections import latest_labels, merge, pull
+from .corrections import corrections_endpoint, latest_labels, merge, pull
 from .nightly import fingerprint, publish_allowed, run, score
 
 CID = "00000000-0000-0000-0000-000000000001"  # independently known train hash
@@ -176,6 +176,31 @@ class CorrectionsTest(unittest.TestCase):
                 self.assertEqual(pull(self.real, "https://example.test"), expected)
         self.assertEqual(cursors, [0, 0, 2])
         self.assertEqual(len((self.real / "labels.jsonl").read_text().splitlines()), 2)
+
+    def test_manavault_endpoint_and_source_are_kept(self):
+        self.assertEqual(corrections_endpoint("https://games.example.com/"), "https://games.example.com/api/cardid/corrections")
+        self.assertEqual(
+            corrections_endpoint("https://vault.example.com/api/scanner/corrections/"),
+            "https://vault.example.com/api/scanner/corrections",
+        )
+        scanned = {**self.row, "source": "manavault-scanner", "finish": "foil"}
+        paths = []
+
+        def handle(request):
+            paths.append(request.url.path)
+            if request.url.path.endswith("corrections"):
+                return httpx.Response(200, json={"data": {"cursor": 1, "has_more": False, "corrections": [scanned]}})
+            return httpx.Response(200, content=self.jpeg)
+
+        client = httpx.Client(transport=httpx.MockTransport(handle))
+        with patch("cardid.corrections.httpx.Client", return_value=client), patch.dict("os.environ", CARDID_CORRECTIONS_TOKEN="test-token"):
+            self.assertEqual(pull(self.real, "https://vault.example.com/api/scanner/corrections"), 1)
+        self.assertEqual(paths, ["/api/scanner/corrections", f"/api/scanner/corrections/{CID}/crop"])
+        row = latest_labels(self.real)[CID]
+        self.assertEqual((row["source"], row["finish"]), ("manavault-scanner", "foil"))
+        # Unknown or missing sources are treated as table corrections, as before.
+        merge({**self.row, "source": "elsewhere", "label": LABEL.replace("1", "3")}, self.jpeg, self.real)
+        self.assertEqual(latest_labels(self.real)[CID]["source"], "webcam-table")
 
     def test_gate_rejects_regression_empty_changed_eval_and_no_new_data(self):
         base = {"count": 5, "correct": 4, "captures": "same"}

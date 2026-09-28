@@ -46,6 +46,23 @@ every bundle file, verifies the uploaded sizes, and leaves "latest" alone (ManaV
 shell uses the latest release for app updates). To roll back, unpublish or delete the newest
 `scanner-bundle-*` release; servers reinstall the previous one on their next check.
 
+## Real phone captures from ManaVault
+
+With **Collect training data** on in ManaVault's scanner settings, every logged scan uploads the
+640 px frame the recognizer saw, its detected card outline and its card to the ManaVault server.
+Changing the printing or finish, or choosing **Wrong card?**, relabels the capture; deleting a
+scan marks it skipped. Pull them like The Gathering's corrections, with the server's
+`SCANNER_CORRECTIONS_TOKEN` (32+ characters) as `CARDID_CORRECTIONS_TOKEN`:
+
+```sh
+CARDID_SERVER=https://manavault.example.com/api/scanner/corrections \
+  uv run python -m cardid.corrections pull      # or set both in ~/.config/cardid.env
+```
+
+Rows arrive with `source: manavault-scanner` (and the scan's `finish`), land in `data/real/`
+with the usual deterministic train/eval split, and feed `train --real`, `evaluate --real` and
+`retrain` (whose held-out gate then includes phone captures).
+
 `mise run test` runs the CPU unit tests. The rest of this document is the detailed reference
 for the pipeline, written while it served The Gathering.
 

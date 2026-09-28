@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import DATA_DIR
-from .corrections import REAL, atomic_json, latest_labels, pull
+from .corrections import REAL, SOURCES, atomic_json, latest_labels, pull
 from .workflow import command, fingerprint, publish_allowed, resolve_checkpoint, score, snapshot_bundle, trained_checkpoint
 
 
@@ -24,7 +24,7 @@ def run(args: argparse.Namespace) -> None:
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     count = pull(args.real_dir, args.server, args.from_dir)
     rows = [r for r in latest_labels(args.real_dir).values() if r.get("label") and (args.real_dir / r["capture_id"] / "card.png").exists()]
-    corrections = [r for r in rows if r.get("source") == "webcam-table"]
+    corrections = [r for r in rows if r.get("source") in SOURCES]
     digest = fingerprint(corrections)
     new_data = bool(corrections) and digest != state.get("corrections")
     print(f"pull/merge: {count} changed; {len(corrections)} usable corrections; new since last completed run: {new_data}", flush=True)

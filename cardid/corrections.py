@@ -1,7 +1,12 @@
-"""Pull human-labelled table clicks into data/real; create card.png from crop.jpg + quad.
+"""Pull human-labelled captures into data/real; create card.png from crop.jpg + quad.
 
     python -m cardid.corrections pull --server https://games.example.com
+    python -m cardid.corrections pull --server https://manavault.example.com/api/scanner/corrections
     python -m cardid.corrections pull --from-dir /mnt/gathering/cardid/corrections
+
+A bare server URL uses The Gathering's `/api/cardid/corrections`; a URL with a path is the
+corrections endpoint itself (ManaVault's scanner serves `/api/scanner/corrections`). Rows
+keep their `source` (`webcam-table` or `manavault-scanner`).
 
 HTTP uses CARDID_CORRECTIONS_TOKEN (read-only admin export capability). Never put it in argv.
 The append cursor advances only after a whole page is imported; retrying is idempotent.
@@ -18,6 +23,8 @@ import os
 import re
 from pathlib import Path
 
+from urllib.parse import urlparse
+
 import cv2
 import httpx
 import numpy as np
@@ -29,6 +36,15 @@ from .detect import warp_card
 ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 GALLERY_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:-1)?\Z")
 REAL = DATA_DIR / "real"
+SOURCES = frozenset({"webcam-table", "manavault-scanner"})
+DEFAULT_ENDPOINT = "/api/cardid/corrections"
+
+
+def corrections_endpoint(server: str) -> str:
+    """The corrections list URL: The Gathering's default path unless the URL names one."""
+    server = server.rstrip("/")
+    path = urlparse(server).path
+    return server if path else server + DEFAULT_ENDPOINT
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -74,7 +90,8 @@ def merge(row: dict, jpeg: bytes, real: Path) -> bool:
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "crop.jpg").write_bytes(jpeg)
     split = "eval" if int(hashlib.sha1(cid.encode()).hexdigest(), 16) % 5 == 0 else "train"
-    label = {**row, "split": split, "source": "webcam-table", "quad_source": "detector", "orientation": 0}
+    origin = row.get("source") if row.get("source") in SOURCES else "webcam-table"
+    label = {**row, "split": split, "source": origin, "quad_source": "detector", "orientation": 0}
     quad = np.asarray(row.get("quad"), dtype=np.float32)
     valid_quad = (
         quad.shape == (4, 2) and np.isfinite(quad).all() and np.abs(quad).max() <= 2048 and cv2.isContourConvex(quad) and abs(cv2.contourArea(quad)) > 16
@@ -107,18 +124,19 @@ def pull(real: Path = REAL, server: str | None = None, from_dir: Path | None = N
         if not token:
             raise ValueError("set CARDID_CORRECTIONS_TOKEN in the environment")
         server = server.rstrip("/")
+        endpoint = corrections_endpoint(server)
         state_path = real / ".corrections-cursor.json"
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         cursor = state.get(server, 0)
         count = 0
         with httpx.Client(headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=60) as client:
             while True:
-                response = client.get(f"{server}/api/cardid/corrections", params={"cursor": cursor})
+                response = client.get(endpoint, params={"cursor": cursor})
                 response.raise_for_status()
                 page = response.json()["data"]
                 for row in page["corrections"]:
                     cid = capture_id(row)
-                    response = client.get(f"{server}/api/cardid/corrections/{cid}/crop")
+                    response = client.get(f"{endpoint}/{cid}/crop")
                     response.raise_for_status()
                     count += merge(row, response.content, real)
                 cursor = page["cursor"]
