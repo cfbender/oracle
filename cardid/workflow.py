@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import ML_DIR
 from .gallery import bundle_index
+from .github import check_repo, download_current, github_repo
 
 
 def sha256(path: Path) -> str:
@@ -71,7 +72,11 @@ def snapshot_bundle(source: str, directory: Path, runner=command) -> tuple[Path,
     from .publish import check_bundle
 
     snapshot = directory / "snapshot"
-    runner("rsync", "-aL", "--", source.rstrip("/") + "/", str(snapshot) + "/")
+    repo = github_repo(source)
+    if repo:
+        download_current(repo, snapshot)
+    else:
+        runner("rsync", "-aL", "--", source.rstrip("/") + "/", str(snapshot) + "/")
     manifest = json.loads((snapshot / "manifest.json").read_text())
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", manifest["version"]):
         raise SystemExit("invalid baseline version")
@@ -82,7 +87,10 @@ def snapshot_bundle(source: str, directory: Path, runner=command) -> tuple[Path,
 
 
 def remote_target(target: str) -> tuple[str, str] | None:
-    """Split [user@]host:/path the same way cardid.publish does; None for a local directory."""
+    """Split [user@]host:/path the same way cardid.publish does; None for a local directory
+    or a github: target."""
+    if github_repo(target):
+        return None
     if ":" in target and not Path(target.split(":", 1)[0]).exists():
         host, dest = target.split(":", 1)
         return host, dest
@@ -94,6 +102,10 @@ def check_destination(target: str, runner=command) -> None:
 
     A mistyped CARDID_PUBLISH_TO would otherwise surface hours later, after training, as a
     refused publish (remote) or a freshly created directory nothing serves (local)."""
+    repo = github_repo(target)
+    if repo:
+        check_repo(repo)
+        return
     remote = remote_target(target)
     if remote is None:
         if not Path(target).expanduser().is_dir():
@@ -119,12 +131,17 @@ def find_manifest(target: str | None, bundles: Path, directory: Path, runner=com
     if target:
         source = target.rstrip("/") + "/current"
         path = directory / "manifest.json"
+        repo = github_repo(target)
         try:
-            runner("rsync", "-aL", "--", source + "/manifest.json", str(path))
+            if repo:
+                download_current(repo, directory, "manifest.json")
+            else:
+                runner("rsync", "-aL", "--", source + "/manifest.json", str(path))
             json.loads(path.read_text())
             return path, source
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
-            missing = isinstance(error, subprocess.CalledProcessError) and error.returncode == 23
+            # rsync exit 23: no current/manifest.json yet; FileNotFoundError: no release yet.
+            missing = isinstance(error, FileNotFoundError) or (isinstance(error, subprocess.CalledProcessError) and error.returncode == 23)
             if require and not missing:
                 raise SystemExit(f"published manifest unreadable ({error}); fix the connection or use --no-publish") from None
             reason = f"nothing is published at {source} yet" if missing else str(error)

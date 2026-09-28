@@ -1,7 +1,11 @@
-"""Ship a bundle (`cardid.export`) to the server that serves it to browsers.
+"""Ship a bundle (`cardid.export`) to where an app serves it to browsers.
 
     uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to nuc:/srv/the-gathering/cardid
     uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to /mnt/gathering/cardid   # local path
+    uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to github:cfbender/manavault
+
+A `github:OWNER/REPO` destination creates a GitHub release per bundle (see `cardid.github`).
+For ssh and local destinations:
 
 The destination ends up as
 
@@ -28,6 +32,7 @@ import tempfile
 from pathlib import Path
 
 from .export import SUMS, sha256, write_sums
+from .github import github_repo, publish_github
 from .workflow import remote_target
 
 REQUIRED = ("manifest.json", "detector.onnx", "embed.onnx", "search.onnx", "arts.json")
@@ -145,7 +150,7 @@ def _publish_local(bundle: Path, dest: Path, keep: int | None) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("bundle", help="bundle directory from cardid.export")
-    ap.add_argument("--to", required=True, help="[user@]host:/path for ssh, or a local directory")
+    ap.add_argument("--to", required=True, help="[user@]host:/path for ssh, github:OWNER/REPO for a release, or a local directory")
     ap.add_argument("--keep", type=int, default=3, help="versions to keep at the destination (0 keeps all)")
     ap.add_argument("--expected-current", help="refuse if current manifest SHA256 differs (nightly evaluation guard)")
     args = ap.parse_args()
@@ -153,8 +158,12 @@ def main() -> None:
     bundle = Path(args.bundle).resolve()
     manifest = check_bundle(bundle)
     print(f"{bundle.name}: {manifest['gallery']['arts']} arts, {sum(f['bytes'] for f in manifest['files'].values()) / 1e6:.1f} MB")
-    remote = remote_target(args.to)
-    if remote:
+    repo = github_repo(args.to)
+    remote = None if repo else remote_target(args.to)
+    if repo:
+        # Releases are immutable versions; --keep does not apply (unpublish old ones by hand).
+        publish_github(bundle, repo, args.expected_current)
+    elif remote:
         publish_remote(bundle, *remote, args.keep or None, args.expected_current)
     else:
         publish_local(bundle, Path(args.to), args.keep or None, args.expected_current)

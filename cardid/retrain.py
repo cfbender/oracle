@@ -48,7 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     source.add_argument("--from-dir", type=Path, help="import a filesystem correction export instead of HTTP")
     parser.add_argument("--checkpoint", type=Path, help="explicit recogniser; overrides manifest resolution")
     parser.add_argument("--detector", type=Path, help="explicit detector; overrides manifest resolution")
-    parser.add_argument("--to", default=os.environ.get("CARDID_PUBLISH_TO"), help="publish destination, local directory or user@host:/path")
+    parser.add_argument("--to", default=os.environ.get("CARDID_PUBLISH_TO"), help="publish destination: local directory, user@host:/path or github:OWNER/REPO")
     parser.add_argument("--epochs", type=positive, default=os.environ.get("CARDID_RETRAIN_EPOCHS", "4"))
     parser.add_argument("--detector-epochs", type=positive, help="also fine-tune the detector (off by default)")
     parser.add_argument("--workers", type=positive, default=os.environ.get("CARDID_WORKERS"))
@@ -161,7 +161,9 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
             if eval_rows:
                 if not source:
                     raise SystemExit("held-out captures exist but no baseline bundle is available; cannot compare safely")
-                if args.dry_run:
+                if args.dry_run and source.startswith("github:"):
+                    print(f"DRY RUN: would download the current release from {source}", flush=True)
+                elif args.dry_run:
                     execute("rsync", "-aL", "--", source.rstrip("/") + "/", str(Path(tmp) / "snapshot") + "/")
                     print(f"DRY RUN: snapshot/verify {source}; score baseline and candidate on the same {len(eval_rows)} held-out crops", flush=True)
                 else:
