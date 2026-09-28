@@ -1,7 +1,7 @@
 [project]
 name = "cardid"
 version = "0.1.0"
-description = "Offline tooling for The Gathering's webcam card recognition: dataset, synthetic degradation, embedding training, evaluation, export."
+description = "Oracle: Magic card recognition models (dataset, synthetic degradation, training, evaluation, ONNX bundle export and publishing) for The Gathering and ManaVault."
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",

@@ -1,4 +1,55 @@
-# Card recognition spike (M0)
+# Oracle
+
+Card recognition for Magic cards: an art embedder (MobileNetV3-Small, 128-d) and a card
+detector (CornerNet), trained here and exported as a versioned browser **bundle** (three ONNX
+graphs plus the gallery index) that apps run with onnxruntime-web. Nothing here runs in an app
+server. It was extracted with its history from The Gathering's `ml/` directory; the Python
+package and entry points are still `cardid` (`python -m cardid.<module>`).
+
+## Apps and where their bundles go
+
+| App | Uses it for | Publish with | Picked up |
+|---|---|---|---|
+| [The Gathering](https://github.com/cfbender/the-gathering) | click-to-identify on the webcam table | `--to user@host:/srv/the-gathering/cardid` (ssh) | Phoenix serves `DATA_DIR/cardid/current`; browsers on the next identification |
+| [ManaVault](https://github.com/cfbender/manavault) | the `/scan` card scanner | `--to github:cfbender/manavault` (one release per bundle, tagged `scanner-bundle-<version>`, never marked latest) | servers install the newest published release at startup and every 6 h; browsers on the next scanner open |
+
+Both apps read the same bundle format, so one export can go to either or both. Their models
+may diverge (a webcam model for the table, a phone-tuned model for the scanner); keep them as
+separate training runs.
+
+## Training box setup
+
+```sh
+git clone git@github.com:cfbender/oracle.git && cd oracle
+mise install && mise exec -- uv sync --extra rocm    # --extra cpu without an AMD GPU
+export UV_NO_SYNC=1                                  # keep the installed torch extra
+gh auth login                                        # only for github: publishing
+```
+
+`data/` (gallery, images, captures, runs, bundles) is ignored by Git. An existing gallery from a
+The Gathering checkout can be reused in place: `ln -s ~/code/github/the-gathering/ml/data data`
+(or move it here). Without one, build it with `cardid.scryfall` (see [Setup](#setup)).
+
+## New set released → new ManaVault bundle
+
+New cards need gallery embeddings, not retraining:
+
+```sh
+mise run update-gallery
+mise run export -- --checkpoint models/recogniser.pt --detector models/detector.pt
+mise run publish -- data/bundles/<version> --to github:cfbender/manavault
+```
+
+`models/` holds the checkpoints behind the currently published bundle; use newer runs instead
+once a fine-tune has been published. `publish` refuses a version that already exists, uploads
+every bundle file, verifies the uploaded sizes, and leaves "latest" alone (ManaVault's Android
+shell uses the latest release for app updates). To roll back, unpublish or delete the newest
+`scanner-bundle-*` release; servers reinstall the previous one on their next check.
+
+`mise run test` runs the CPU unit tests. The rest of this document is the detailed reference
+for the pipeline, written while it served The Gathering.
+
+# Reference: the card recognition pipeline
 
 Offline tooling for the webcam table's click-to-identify feature. Nothing here runs in the
 Phoenix app; it produces numbers (go/no-go) and a versioned runtime bundle (three ONNX graphs
@@ -11,8 +62,8 @@ without local training runs, retrain starts from the committed
 [starting weights](#starting-weights)), first-time setup:
 
 ```sh
-mise install && mise exec -- uv sync --project ml --extra rocm
-mkdir -p ~/.config; test -e ~/.config/cardid.env || install -m 600 ml/nightly.env.example ~/.config/cardid.env
+mise install && mise exec -- uv sync --extra rocm
+mkdir -p ~/.config; test -e ~/.config/cardid.env || install -m 600 nightly.env.example ~/.config/cardid.env
 ${EDITOR:-nano} ~/.config/cardid.env
 ```
 
@@ -27,21 +78,21 @@ are used. Existing environment values override the file, and flags override both
 a warning is printed if the file is readable by other users.
 
 ```sh
-mise run ml:retrain -- --dry-run             # resolve models and inspect the plan first
-mise run ml:retrain                         # pull → gallery refresh → 4 epochs → export/verify → evaluate → publish
-mise run ml:retrain -- --detector-epochs 4    # also fine-tune the resolved detector
-mise run ml:retrain -- --no-publish          # train/export/evaluate for review, leave server and nightly state alone
-mise run ml:retrain -- --from-dir /mnt/cardid/corrections --no-update-gallery --epochs 2
-mise run ml:evaluate -- --method checkpoint --checkpoint data/runs/full-3/best.pt --profile realistic
-mise run ml:export -- --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
-mise run ml:publish -- data/bundles/<version> --to nuc:/srv/the-gathering/cardid
-mise run ml:update-gallery
-mise run ml:test
+mise run retrain -- --dry-run             # resolve models and inspect the plan first
+mise run retrain                         # pull → gallery refresh → 4 epochs → export/verify → evaluate → publish
+mise run retrain -- --detector-epochs 4    # also fine-tune the resolved detector
+mise run retrain -- --no-publish          # train/export/evaluate for review, leave server and nightly state alone
+mise run retrain -- --from-dir /mnt/cardid/corrections --no-update-gallery --epochs 2
+mise run evaluate -- --method checkpoint --checkpoint data/runs/full-3/best.pt --profile realistic
+mise run export -- --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
+mise run publish -- data/bundles/<version> --to nuc:/srv/the-gathering/cardid
+mise run update-gallery
+mise run test
 ```
 
-All tasks run in `ml/`, forward arguments after `--`, and preserve the installed torch extra
+All tasks run in the repository root, forward arguments after `--`, and preserve the installed torch extra
 with `uv run --no-sync`. Use `--extra cpu` instead of `rocm` for CPU-only setup. The step tasks
-are thin wrappers; **only `ml:retrain` reads the env file and orchestrates a gated publication**.
+are thin wrappers; **only `retrain` reads the env file and orchestrates a gated publication**.
 Manual commands below remain useful for individual experiments.
 
 Retrain prefers SHA256 matches to the server's `current/manifest.json` across
@@ -50,7 +101,7 @@ manifest by mtime. If no checkpoint matches, it warns and selects the newest che
 the right model type (tensor names, not run-directory names). `--checkpoint` / `--detector`
 always win; old `CARDID_CHECKPOINT` / `CARDID_DETECTOR` paths are additional search hints,
 not overrides of the published hashes. To use an unpublished detector experiment explicitly:
-`mise run ml:retrain -- --detector data/runs/det-two-part/last.pt`.
+`mise run retrain -- --detector data/runs/det-two-part/last.pt`.
 
 Usable, gallery-backed train captures enable `--real`; otherwise training is synthetic-only.
 Train captures without real eval captures still mix into training, with synthetic checkpoint
@@ -114,7 +165,6 @@ beat the truth by 0.01 in real evals while on clean scans no rare-frame impostor
 ## Setup
 
 ```sh
-cd ml
 uv sync --extra cpu                            # CPU-only torch from the pytorch index (see GPU training below)
 export UV_NO_SYNC=1                            # preserve the installed torch extra
 uv run python -m cardid.scryfall --train 5000 --eval 1000   # bulk metadata + art_crop sample
@@ -331,7 +381,7 @@ production readiness. Evaluate the production pair before publishing; first inve
 detector corners/orientation if that gap remains, rather than blindly retraining the embedder.
 
 For the full retraining cycle, use [One command](#one-command). To evaluate/export the
-existing weights without training, run on the training box from `ml/` (use your actual paths):
+existing weights without training, run on the training box from the repository root (use your actual paths):
 
 ```sh
 uv sync --extra rocm
@@ -391,21 +441,20 @@ On Cody's **RX 9070 XT / ROCm box**, with the existing `~/.config/cardid.env` co
 run these in order from the repository root after updating the code:
 
 ```sh
-mise exec -- uv sync --project ml --extra rocm
+mise exec -- uv sync --extra rocm
 export UV_NO_SYNC=1
-cd ml
 mise exec -- uv run python -m cardid.scryfall --update
 mise exec -- uv run python -m cardid.scryfall --cards 3000 --two-part-cards
 mise exec -- uv run python -m cardid.evaluate_layouts --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
 cp data/layout-eval/report.json data/layout-eval/before-two-part.json
-mise run ml:retrain -- --detector-epochs 4 --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt --no-update-gallery --no-publish
+mise run retrain -- --detector-epochs 4 --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt --no-update-gallery --no-publish
 report=$(ls -t data/retrain/*.json | head -n 1)
 detector=$(jq -er '.candidate_detector' "$report")
 mise exec -- uv run python -m cardid.evaluate_layouts --checkpoint data/runs/full-3/best.pt --detector "$detector"
 cp data/layout-eval/report.json data/layout-eval/after-two-part.json
 ```
 
-The normal `mise run ml:retrain -- --detector-epochs 4` still works after the download;
+The normal `mise run retrain -- --detector-epochs 4` still works after the download;
 the explicit paths above pin the published pair, skip a redundant gallery refresh, and
 hold publication for review. Retrain also fine-tunes the recogniser as before; this change
 does not modify that training. It adds `--real` when usable correction training data exists.
@@ -419,7 +468,7 @@ captures should not regress. Geometry uses the diagnostic's 15%-short-side toler
 long-axis cosine <0.5; `rot180` is an otherwise matching outline with inverted printed
 order, and all remaining errors are `other` (an odd corner-index roll is not a physical
 90° rectangle). Check counts; small samples are noisy. Review the candidate recogniser too
-before publishing the already-exported bundle with `ml:publish`. No automatic publication
+before publishing the already-exported bundle with `publish`. No automatic publication
 is performed by the review recipe above.
 
 ## GPU training (AMD RX 9070 XT / ROCm)
@@ -717,6 +766,7 @@ graphs plus the gallery index, built once on the training machine and copied to 
 uv sync --extra rocm                                  # once: pulls onnxruntime for the parity check
 uv run python -m cardid.export --checkpoint data/runs/full-3/best.pt --detector data/runs/det4/last.pt
 uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to nuc:/srv/the-gathering/cardid
+uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to github:cfbender/manavault   # ManaVault release
 ```
 
 `export` writes `data/bundles/<version>/` (default version `<UTC timestamp>-<checkpoint run name>`,
@@ -806,7 +856,7 @@ exported index, not from `data/arts.json`. Retrain (`train
 ### Apply the expanded gallery to an existing deployment
 
 This code change **does not regenerate the deployed bundle**. On the training box, from
-`ml/`, use the existing checkpoints (no retraining required) and a fresh immutable version:
+the repository root, use the existing checkpoints (no retraining required) and a fresh immutable version:
 
 ```sh
 uv run python -m cardid.scryfall --update
@@ -870,7 +920,7 @@ cookie sessions can also export. The API returns up to 50 rows at
 `GET /api/cardid/corrections?cursor=N` and JPEGs at `/api/cardid/corrections/:id/crop`.
 
 Prefer [One command](#one-command) for the complete desktop loop. For individual steps on
-the **Linux/ROCm desktop**, from `ml/`:
+the **Linux/ROCm desktop**, from the repository root:
 
 ```sh
 uv sync --extra rocm                              # once
@@ -947,7 +997,7 @@ dataset as seen; failures/timeouts do not. Dry runs never mark data as trained. 
 best checkpoint and seen fingerprint live in `data/nightly/state.json`. Nightly now resolves
 local checkpoints against the published manifest, so stale environment/state paths do not
 block it after a manual publish; **it still refuses when no local model matches either hash**.
-`ml:retrain` updates both paths automatically after publishing. Keep matching checkpoint files
+`retrain` updates both paths automatically after publishing. Keep matching checkpoint files
 on the desktop. Logs and exact correct/count/top-1 values live in
 `data/nightly/YYYY-MM-DD.log` and per-run JSON reports. A lock prevents overlapping runs;
 dataset changes or a changed published manifest abort publication. Keep previous checkpoints
@@ -955,19 +1005,19 @@ and bundles for rollback. Do not run another label importer/trainer during this 
 
 Optional **user systemd units** assume checkout `~/the-gathering` (edit paths if different).
 Run them under a **dedicated unprivileged account** (for example `cardid`) that owns only the
-checkout, its `ml/data`, `~/.config/cardid.env` and an SSH key authorised for the publish
+checkout, its `data`, `~/.config/cardid.env` and an SSH key authorised for the publish
 target, rather than your everyday login: a compromised dependency or model file then cannot
 reach your own files or keys. As that user (`sudo loginctl enable-linger cardid`, then
 `sudo machinectl shell cardid@`), clone the repository, run `mise install` / `uv sync --extra rocm`,
-create `ml/data`, and `ssh` to the publish host once to accept its key; add the account to the
+create `data`, and `ssh` to the publish host once to accept its key; add the account to the
 `render`/`video` groups if ROCm needs them for `/dev/kfd`.
 
 The service is sandboxed: `NoNewPrivileges`, `PrivateTmp`, `UMask=0077`,
-`ProtectSystem=strict` with `ReadWritePaths=%h/the-gathering/ml/data` (everything the job writes:
+`ProtectSystem=strict` with `ReadWritePaths=%h/oracle/data` (everything the job writes:
 nightly logs/lock/state, pulled corrections, runs, bundles, caches), and `ProtectHome=read-only`
-so the checkout, env file and `~/.ssh` stay readable for rsync/ssh publication. `ml/data` must
+so the checkout, env file and `~/.ssh` stay readable for rsync/ssh publication. `data` must
 exist before the first run. uv's cache goes to the private `/tmp` and MIOpen's kernel cache to
-`ml/data/cache/miopen`. In a user unit these settings imply `PrivateUsers=true`, which needs
+`data/cache/miopen`. In a user unit these settings imply `PrivateUsers=true`, which needs
 unprivileged user namespaces enabled in the kernel. Because home is read-only, SSH cannot record
 new host keys or create `ControlMaster` sockets under `~/.ssh` (point `ControlPath` at `/tmp` or
 disable multiplexing for the publish host), and a local-directory `CARDID_PUBLISH_TO` needs a
@@ -997,14 +1047,14 @@ Equivalent cron schedule (Cronie/cron with `CRON_TZ` support; no missed-run catc
 ```cron
 CRON_TZ=America/New_York
 PATH=/home/cody/.local/bin:/usr/local/bin:/usr/bin:/bin
-0 4 * * * /bin/bash /home/cody/the-gathering/ml/nightly.sh
+0 4 * * * /bin/bash /home/cody/oracle/nightly.sh
 ```
 
 Use your actual home path. Cron implementations without `CRON_TZ` must use a host timezone
 of America/New_York; setting `TZ` only for the command does not change scheduling. Do not
 enable both cron and the timer.
 
-CPU-only checks: `uv run ruff check`, `uv run ruff format --check`, and `mise run ml:test`
+CPU-only checks: `uv run ruff check`, `uv run ruff format --check`, and `mise run test`
 (`uv run python -m unittest discover -s cardid -t .`; the tests are plain `unittest`, so
 `uv run --with pytest python -m pytest cardid` also works without adding a dependency). Besides
 import/relabel/skip, interrupted HTTP pulls, gate boundaries and local/SSH-shell publication

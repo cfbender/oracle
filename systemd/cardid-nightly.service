@@ -1,19 +1,20 @@
 [Unit]
 Description=Pull corrections and conditionally publish a better card recognizer
-# Every path below assumes the checkout lives at ~/the-gathering; ideally in the home of a
-# dedicated unprivileged account (see ml/README.md, "Optional nightly loop").
+# Every path below assumes the checkout lives at ~/oracle; ideally in the home of a
+# dedicated unprivileged account (see README.md, "Optional nightly loop"). Adjust the paths
+# (or symlink ~/oracle) if the checkout lives elsewhere.
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/the-gathering/ml
+WorkingDirectory=%h/oracle
 # No EnvironmentFile=: nightly.sh reads ~/.config/cardid.env (or $CARDID_ENV_FILE) itself as
 # literal KEY=value data via cardid.envfile, so there is exactly one parser.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # uv needs a writable cache even for `uv run --no-sync`; keep it in the private /tmp.
 Environment=UV_CACHE_DIR=/tmp/uv-cache
 # ROCm's MIOpen kernel database/cache would otherwise go to ~/.config and ~/.cache.
-Environment=MIOPEN_USER_DB_PATH=%h/the-gathering/ml/data/cache/miopen MIOPEN_CUSTOM_CACHE_DIR=%h/the-gathering/ml/data/cache/miopen
-ExecStart=/bin/bash %h/the-gathering/ml/nightly.sh
+Environment=MIOPEN_USER_DB_PATH=%h/oracle/data/cache/miopen MIOPEN_CUSTOM_CACHE_DIR=%h/oracle/data/cache/miopen
+ExecStart=/bin/bash %h/oracle/nightly.sh
 IOSchedulingClass=idle
 TimeoutStartSec=2h
 TimeoutStopSec=30s
@@ -29,7 +30,7 @@ UMask=0077
 # cursor), data/runs (checkpoints), data/bundles (exports), data/cache and the gallery/
 # eval-query caches. Temporary baseline snapshots and export tarballs use the private /tmp.
 ProtectSystem=strict
-ReadWritePaths=%h/the-gathering/ml/data
+ReadWritePaths=%h/oracle/data
 # Home stays readable: the checkout and its .venv, ~/.config/cardid.env, and ~/.ssh (keys,
 # config, known_hosts) for rsync/ssh publication. Nothing in it is writable except the path
 # above, so accept the publish host's key interactively once before enabling the timer.

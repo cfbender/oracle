@@ -1,15 +1,21 @@
-"""An exported bundle provides every field and graph name the browser runtime reads.
+"""An exported bundle provides every field and graph name the browser runtimes read.
 
-The consumer is assets/react/src/features/webcam-table/recognition: `pipeline.ts`
-(`BundleConstants`), `messages.ts` (`BundleInfo`, the manifest fields Phoenix forwards),
-`recognizer.worker.ts` (ONNX feed/output names) and `gallery.ts` (`printings.json`). The
-constant and gallery field names are read from those TypeScript sources, so renaming either
-side fails here instead of in a browser.
+The consumers are the apps' TypeScript recognition code, read from checkouts next to this one
+(or the directories in `CARDID_CONSUMERS`, separated by `:`):
+
+- The Gathering: assets/react/src/features/webcam-table/recognition (`recognizer.worker.ts`)
+- ManaVault: assets/react/src/pages/scan/recognition (`recognizer.ts`)
+
+Each has `pipeline.ts` (`BundleConstants`) and `messages.ts` (`BundleInfo`, the manifest fields
+the server forwards) plus a module holding the ONNX feed/output names. Constant, gallery and
+file names are read from those sources, so renaming either side fails here instead of in a
+browser. Without any consumer checkout the source checks are skipped.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -31,7 +37,38 @@ from .export import SUMS, export_bundle, sha256
 from .model import Embedder
 from .publish import REQUIRED, check_bundle
 
-RECOGNITION = ML_DIR.parent / "assets/react/src/features/webcam-table/recognition"
+# (recognition directory relative to the app checkout, module with the ONNX feed/output names)
+KNOWN_CONSUMERS = {
+    "the-gathering": ("assets/react/src/features/webcam-table/recognition", "recognizer.worker.ts"),
+    "manavault": ("assets/react/src/pages/scan/recognition", "recognizer.ts"),
+}
+
+
+def consumers() -> list[tuple[Path, str]]:
+    """(recognition directory, graph module) for every consumer checkout that exists."""
+    found = []
+    explicit = [Path(p) for p in os.environ.get("CARDID_CONSUMERS", "").split(":") if p]
+    for directory in explicit:
+        # The graph module is whichever reads the ONNX outputs (ManaVault's worker delegates).
+        modules = [m for m in ("recognizer.worker.ts", "recognizer.ts") if (directory / m).is_file()]
+        module = next((m for m in modules if "?.data" in (directory / m).read_text()), modules[0] if modules else "recognizer.ts")
+        found.append((directory, module))
+    if not explicit:
+        for app, (relative, module) in KNOWN_CONSUMERS.items():
+            directory = ML_DIR.parent / app / relative
+            if (directory / "pipeline.ts").is_file():
+                found.append((directory, module))
+    return found
+
+
+def bundle_file_names(messages: str) -> list[str]:
+    """Files the browser fetches: `files: Record<"a" | "b", string>` or a `BUNDLE_FILES` list."""
+    record = re.search(r"files: Record<(.*?),\s*string\s*>", messages, re.DOTALL)
+    names = re.findall(r'"([\w.]+)"', record.group(1)) if record else []
+    if not names:
+        listed = re.search(r"BUNDLE_FILES = \[(.*?)\]", messages, re.DOTALL)
+        names = re.findall(r'"([\w.]+)"', listed.group(1)) if listed else []
+    return names
 
 
 def interface_fields(source: str, name: str) -> list[str]:
@@ -75,9 +112,20 @@ class ManifestContractTest(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.root)
 
+    def consumer_sources(self) -> list[tuple[Path, str]]:
+        found = consumers()
+        if not found:
+            self.skipTest("no consumer checkout next to this one (../the-gathering, ../manavault) or in CARDID_CONSUMERS")
+        return found
+
     def test_manifest_has_every_field_the_browser_reads(self):
-        pipeline = (RECOGNITION / "pipeline.ts").read_text()
-        messages = (RECOGNITION / "messages.ts").read_text()
+        for directory, _module in self.consumer_sources():
+            with self.subTest(consumer=str(directory)):
+                self.check_manifest_fields(directory)
+
+    def check_manifest_fields(self, directory: Path):
+        pipeline = (directory / "pipeline.ts").read_text()
+        messages = (directory / "messages.ts").read_text()
         m = self.manifest
         self.assertEqual(m["version"], "contract-v1")
         self.assertIsInstance(m["created"], str)
@@ -98,7 +146,7 @@ class ManifestContractTest(unittest.TestCase):
             with self.subTest(gallery=field):
                 self.assertIn(field, m["gallery"])
         self.assertEqual((m["gallery"]["arts"], m["gallery"]["topk"], m["gallery"]["embed_dim"]), (4, 3, 128))
-        file_names = re.findall(r'"([\w.]+)"', re.search(r"files: Record<(.*?),\s*string\s*>", messages, re.DOTALL).group(1))
+        file_names = bundle_file_names(messages)
         self.assertIn("detector.onnx", file_names)
         for name in [*file_names, "printings.json"]:
             with self.subTest(file=name):
@@ -113,12 +161,17 @@ class ManifestContractTest(unittest.TestCase):
         sums = dict(line.split("  ")[::-1] for line in (self.bundle / SUMS).read_text().splitlines())
         self.assertEqual(sums["manifest.json"], sha256(self.bundle / "manifest.json"))
 
-    def test_onnx_names_and_shapes_match_the_worker(self):
-        worker = (RECOGNITION / "recognizer.worker.ts").read_text()
-        for name in ("window", "scene", "quad", "embeddings"):
-            self.assertIn(f"{name}:", worker)  # feed names used by the worker
-        for name in ("quad", "up", "centre", "short", "indices", "scores"):
-            self.assertIn(f".{name}?.data", worker)  # outputs it reads by name
+    def test_onnx_names_used_by_the_browser(self):
+        for directory, module in self.consumer_sources():
+            worker = (directory / module).read_text()
+            for name in ("window", "scene", "quad", "embeddings"):
+                with self.subTest(consumer=str(directory), feed=name):
+                    self.assertIn(f"{name}:", worker)  # feed names used by the runtime
+            for name in ("quad", "up", "centre", "short", "indices", "scores"):
+                with self.subTest(consumer=str(directory), output=name):
+                    self.assertIn(f".{name}?.data", worker)  # outputs it reads by name
+
+    def test_onnx_names_and_shapes(self):
 
         def session(name):
             return ort.InferenceSession(str(self.bundle / name), providers=["CPUExecutionProvider"])

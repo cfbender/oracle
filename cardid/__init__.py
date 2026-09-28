@@ -1,4 +1,4 @@
-"""Card recognition spike for The Gathering's webcam table (M0)."""
+"""Oracle: Magic card recognition models for The Gathering and ManaVault."""
 
 import os
 from pathlib import Path

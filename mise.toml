@@ -1,0 +1,26 @@
+[tools]
+uv = "0.12.9"
+
+[tasks.retrain]
+description = "Pull corrections, fine-tune, evaluate, and publish card recognition."
+run = "uv run --no-sync python -m cardid.retrain"
+
+[tasks.evaluate]
+description = "Evaluate card recognition checkpoints."
+run = "uv run --no-sync python -m cardid.evaluate"
+
+[tasks.export]
+description = "Export and verify an ONNX bundle."
+run = "uv run --no-sync python -m cardid.export"
+
+[tasks.publish]
+description = "Publish an exported bundle (ssh host, local directory, or github:OWNER/REPO release)."
+run = "uv run --no-sync python -m cardid.publish"
+
+[tasks.update-gallery]
+description = "Refresh Scryfall metadata and missing artwork."
+run = "uv run --no-sync python -m cardid.scryfall --update"
+
+[tasks.test]
+description = "Run the CPU-only unit tests."
+run = "uv run --no-sync python -m unittest discover -s cardid -t ."
