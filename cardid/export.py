@@ -12,11 +12,13 @@ writes data/bundles/<version>/ (version defaults to <UTC timestamp>-<checkpoint 
     arts.json       gallery entries in index order: id, name, set, collector_number, layout, frame
     SHA256SUMS      the same sums for `sha256sum -c` (cardid.publish checks them on the host)
 
-The graphs are loadable by onnxruntime-web (wasm and webgpu; embed.onnx needs GridSample,
-which the wasm backend always has) and by onnxruntime on a server. `cardid.bundle` runs a
-bundle from Python and is what `--verify` compares against the torch pipeline: same clicks on
-freshly rendered scenes through `Detector.locate_up` + `warp_card`/`art_crops` + `ArtIndex`
-and through the bundle, reporting corner agreement and top-1 agreement.
+The graphs are loadable by onnxruntime-web's wasm backend (embed.onnx needs GridSample, which
+it always has) and by onnxruntime on a server. Its native WebGPU EP also runs them, but Round
+and Mod fall back to the CPU; see docs/webcam-table.md for why the browser stays on wasm.
+`cardid.bundle` runs a bundle from Python and is what `--verify` compares against the torch
+pipeline: same clicks on freshly rendered scenes through `Detector.locate_up` +
+`warp_card`/`art_crops` + `ArtIndex` and through the bundle, reporting corner agreement and
+top-1 agreement.
 
 New cards do not need retraining: `cardid.scryfall --update` pulls them into the gallery and
 a re-export embeds them. `cardid.publish` ships a bundle to the server.
