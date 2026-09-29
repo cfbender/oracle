@@ -323,6 +323,23 @@ class RetrainTest(unittest.TestCase):
         self.assertNotIn("--real", detector)
         self.assertEqual(report["detector_real_captures"], 0)
 
+    def test_gallery_only_reexports_the_published_models_through_the_gate(self):
+        self.real_rows(quad_source="manual")
+        report = self.run_pipeline("--gallery-only", "--no-update-gallery", "--detector-epochs", "4", scorer=self.scores())
+        modules = [c[2] for c in self.commands if c[0] == "python"]
+        self.assertEqual(modules, ["cardid.corrections", "cardid.export", "cardid.publish"])
+        export = next(c for c in self.commands if c[:3] == ("python", "-m", "cardid.export"))
+        self.assertEqual(export[export.index("--checkpoint") + 1], str(self.checkpoint))
+        self.assertEqual(export[export.index("--detector") + 1], str(self.detector))
+        self.assertEqual((report["status"], report["gallery_only"], report["allowed"]), ("published", True, True))
+
+    def test_gallery_only_refuses_checkpoints_that_are_not_the_published_ones(self):
+        self.manifest["recogniser"]["sha256"] = "0" * 64
+        self.manifest_path.write_text(json.dumps(self.manifest))
+        with self.assertRaisesRegex(SystemExit, "no local checkpoint matches the published manifest"):
+            self.run_pipeline("--gallery-only", "--no-update-gallery")
+        self.assertNotIn("cardid.export", [c[2] for c in self.commands if c[0] == "python"])
+
     def test_unknown_train_labels_use_synthetic_only(self):
         self.real_rows(evaluation=False, known=False)
         self.run_pipeline("--no-publish")

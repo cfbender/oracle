@@ -33,21 +33,35 @@ gh auth login                                        # only for github: publishi
 The Gathering checkout can be reused in place: `ln -s ~/code/github/the-gathering/ml/data data`
 (or move it here). Without one, build it with `cardid.scryfall` (see [Setup](#setup)).
 
-## New set released → new ManaVault bundle
+## New set released → new bundles for both apps
 
-New cards need gallery embeddings, not retraining:
+New cards need gallery embeddings, not retraining. One command refreshes the gallery and ships it
+to every app with a profile (see [Two apps on one machine](#two-apps-on-one-machine)):
 
 ```sh
-mise run update-gallery
-mise run export -- --checkpoint models/recogniser.pt --detector models/detector.pt
-mise run publish -- data/bundles/<version> --to github:cfbender/manavault
+mise run new-set                            # ManaVault and The Gathering
+mise run new-set -- --profile manavault     # only one app (repeatable)
+mise run new-set -- --dry-run               # print each app's plan; downloads nothing
 ```
 
-`models/` holds the checkpoints behind the currently published bundle; use newer runs instead
-once a fine-tune has been published. `publish` refuses a version that already exists, uploads
-every bundle file, verifies the uploaded sizes, and leaves "latest" alone (ManaVault's Android
-shell uses the latest release for app updates). To roll back, unpublish or delete the newest
-`scanner-bundle-*` release; servers reinstall the previous one on their next check.
+It runs `scryfall --update` once, then `retrain --gallery-only` with each profile:
+
+- **Checkpoints:** each app re-exports exactly the checkpoints behind its own published bundle.
+  They must match the published manifest's SHA256; a run refuses rather than guess.
+- **Gate:** the new bundle passes the same held-out gate on that app's real captures as a
+  retrain. Captures whose labels only one bundle knows are left out of both scores.
+- **Publishing:** it publishes to that app's target, a `gallery-<timestamp>` version.
+- **Failures:** an app that fails (for example, its server is unreachable) does not stop the
+  others. The summary names it, and the exit status is non-zero.
+
+Each run writes its usual `data/retrain/gallery-*.json` report. Other flags pass through to
+every run, for example `--no-publish` or `--force`.
+
+`publish` refuses a version that already exists, uploads every bundle file, verifies the
+uploaded sizes, and leaves "latest" alone (ManaVault's Android shell uses the latest release
+for app updates). To roll back ManaVault, unpublish or delete the newest `scanner-bundle-*`
+release; servers reinstall the previous one on their next check. The Gathering keeps
+`previous` next to `current` on its server.
 
 ## Real phone captures from ManaVault
 
@@ -912,7 +926,8 @@ script is run under `bash -c` so the login shell does not matter.
 ### New sets
 
 New cards need gallery embeddings, not retraining (the recogniser learned "compare arts", not
-"these arts"). When a set releases:
+"these arts"). When a set releases, `mise run new-set` does it for every app (see
+[New set released](#new-set-released--new-bundles-for-both-apps)). The same steps by hand, for one app:
 
 ```sh
 uv run python -m cardid.scryfall --update        # fresh bulk file, new arts appended to data/arts.json, only new images downloaded
@@ -1046,7 +1061,7 @@ evaluation → conditional publish. Unlike the individual commands above, it gat
 It deliberately does **not** run `scryfall --update`: gallery-only changes would otherwise
 be hidden behind the no-new-corrections gate, bulk/art downloads spend the same two-hour
 budget, and the baseline cannot score labels it does not yet contain. Refresh/export/publish
-the gallery explicitly using the commands above before collecting corrections for newly
+the gallery explicitly with `mise run new-set` before collecting corrections for newly
 included faces. A future separate gallery-refresh job should have its own budget and
 publication policy rather than silently changing this correction-training gate.
 Requires `uv`, `rsync`, SSH access (or a mounted publish destination), GNU `timeout`, and

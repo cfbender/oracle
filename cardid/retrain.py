@@ -1,4 +1,8 @@
-"""Pull corrections, refresh the gallery, fine-tune, evaluate and publish in one run."""
+"""Pull corrections, refresh the gallery, fine-tune, evaluate and publish in one run.
+
+With --gallery-only (new sets; see cardid.new_set) nothing is trained: the checkpoints behind
+the app's published bundle are re-exported with the refreshed gallery and pass the same
+held-out gate before publishing."""
 
 from __future__ import annotations
 
@@ -60,6 +64,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--workers", type=positive, default=os.environ.get("CARDID_WORKERS"))
     parser.add_argument("--update-gallery", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--gallery-only",
+        action="store_true",
+        help="no training: re-export the published checkpoints (exact SHA256 match required) with the refreshed gallery",
+    )
     parser.add_argument("--no-publish", action="store_true")
     parser.add_argument("--force", action="store_true", help="publish even if comparable held-out top-1 regresses; never bypass parity/concurrency checks")
     parser.add_argument("--dry-run", action="store_true", help="read manifests/checkpoints and print the plan; do not pull, train, export or publish")
@@ -97,7 +106,7 @@ def train_rows(data: Path, rows: list[dict]) -> list[dict]:
 
 
 def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scorer=score, version: str | None = None) -> dict:
-    version = version or datetime.now(UTC).strftime("retrain-%Y%m%dT%H%M%S%fZ")
+    version = version or datetime.now(UTC).strftime(("gallery" if args.gallery_only else "retrain") + "-%Y%m%dT%H%M%S%fZ")
     report_dir = data / "retrain"
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"{version}.json"
@@ -109,6 +118,7 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
         "epochs": args.epochs,
         "detector_epochs": args.detector_epochs,
         "update_gallery": args.update_gallery,
+        "gallery_only": args.gallery_only,
         "force": args.force,
         "publish_to": args.to,
         "no_publish": args.no_publish,
@@ -148,12 +158,14 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
             baseline_hash = sha256(path) if path else None
             # Only a manifest fetched from the server can guard against a concurrent publish.
             published = source is not None and args.to is not None and source == args.to.rstrip("/") + "/current"
+            # A gallery-only export must ship exactly the published models, never a guess.
             checkpoint = resolve_checkpoint(
                 "recogniser",
                 data / "runs",
                 manifest,
                 args.checkpoint,
                 hint=Path(os.environ["CARDID_CHECKPOINT"]) if os.environ.get("CARDID_CHECKPOINT") else None,
+                strict=args.gallery_only,
             )
             detector = resolve_checkpoint(
                 "detector",
@@ -161,16 +173,15 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
                 manifest,
                 args.detector,
                 hint=Path(os.environ["CARDID_DETECTOR"]) if os.environ.get("CARDID_DETECTOR") else None,
+                strict=args.gallery_only,
             )
             report.update(checkpoint=str(checkpoint), detector=str(detector), baseline_source=source, baseline_hash=baseline_hash, baseline_published=published)
             rows = usable_rows(data)
             real_train = train_rows(data, rows)
             eval_rows = [r for r in rows if r["split"] == "eval"]
             report.update(train_captures=len(real_train), eval_captures=len(eval_rows))
-            print(
-                f"training: {'real + synthetic' if real_train else 'synthetic-only'} ({len(real_train)} usable train, {len(eval_rows)} held-out captures)",
-                flush=True,
-            )
+            mode = "none (gallery only)" if args.gallery_only else "real + synthetic" if real_train else "synthetic-only"
+            print(f"training: {mode} ({len(real_train)} usable train, {len(eval_rows)} held-out captures)", flush=True)
             if args.dry_run:
                 print("DRY RUN: correction/gallery reads use existing local data; the real run rechecks after pulling/updating.", flush=True)
             baseline_path = None
@@ -189,13 +200,14 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
             else:
                 report["real_gate"] = "unavailable: no held-out real captures"
                 print("WARNING: no held-out real captures; synthetic metrics are informational, publication has no real non-regression gate", flush=True)
-            training_options = ["--workers", str(args.workers)] if args.workers else []
-            if real_train:
-                training_options += ["--real"]
-            execute("python", "-m", "cardid.train", "--resume", str(checkpoint), "--epochs", str(args.epochs), "--run", version, *training_options)
-            candidate_checkpoint = model_output(version, "candidate_checkpoint")
-            candidate_detector = str(detector)
-            if args.detector_epochs:
+            candidate_checkpoint, candidate_detector = str(checkpoint), str(detector)
+            if not args.gallery_only:
+                training_options = ["--workers", str(args.workers)] if args.workers else []
+                if real_train:
+                    training_options += ["--real"]
+                execute("python", "-m", "cardid.train", "--resume", str(checkpoint), "--epochs", str(args.epochs), "--run", version, *training_options)
+                candidate_checkpoint = model_output(version, "candidate_checkpoint")
+            if args.detector_epochs and not args.gallery_only:
                 detector_run = version + "-detector"
                 # Real captures train the detector only with outlines a person drew or a top-5
                 # hit confirmed; imported ones carry the detector's own quads, so often none do.
@@ -241,7 +253,8 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
                 print(f"held-out baseline: {json.dumps(baseline)}\nheld-out candidate: {json.dumps(candidate)}", flush=True)
                 if not comparable:
                     raise SystemExit("refusing incomparable held-out evaluation")
-            execute("python", "-m", "cardid.evaluate", "--method", "checkpoint", "--checkpoint", candidate_checkpoint, "--profile", "realistic")
+            if not args.gallery_only:  # an unchanged checkpoint has unchanged synthetic metrics
+                execute("python", "-m", "cardid.evaluate", "--method", "checkpoint", "--checkpoint", candidate_checkpoint, "--profile", "realistic")
             if fingerprint(usable_rows(data)) != fingerprint(rows):
                 raise SystemExit("real dataset changed during training; refusing publication")
             report.update(candidate_checkpoint=candidate_checkpoint, candidate_detector=candidate_detector)

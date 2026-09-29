@@ -227,6 +227,7 @@ command pulls captures, fine-tunes, evaluates and publishes:
 ```sh
 mise run manavault    # phone scanner model → a scanner-bundle-* release on cfbender/manavault
 mise run gathering    # webcam table model → The Gathering's server
+mise run new-set      # a set released: refresh the gallery and ship it to both, no training
 ```
 
 A run publishes only if the new bundle does at least as well as the published one on that app's

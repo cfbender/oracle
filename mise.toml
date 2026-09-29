@@ -42,3 +42,7 @@ run = "uv run --no-sync python -m cardid.retrain --env-file ~/.config/cardid/man
 [tasks.gathering]
 description = "Pull table corrections, fine-tune, evaluate and publish The Gathering's model."
 run = "uv run --no-sync python -m cardid.retrain --env-file ~/.config/cardid/the-gathering.env"
+
+[tasks.new-set]
+description = "New set released: refresh the gallery once, then re-export and publish every app's model with it."
+run = "uv run --no-sync python -m cardid.new_set"

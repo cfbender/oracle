@@ -187,7 +187,7 @@ def resolve_checkpoint(kind: str, runs: Path, manifest: dict | None, explicit: P
                 return path
         print(f"WARNING: {kind} manifest SHA256 matches no local checkpoint", flush=True)
     if strict:
-        raise SystemExit(f"{kind}: no local checkpoint matches the published manifest; refusing retraining")
+        raise SystemExit(f"{kind}: no local checkpoint matches the published manifest; refusing to guess which model to start from or ship")
     print(f"WARNING: {kind}: falling back to newest mtime by model type; this may be an unpublished experiment", flush=True)
     for path in candidates:
         try:
