@@ -95,11 +95,13 @@ class RetrainTest(unittest.TestCase):
         kwargs = {"scorer": scorer} if scorer else {}
         return retrain.run(self.args(*extra), data=self.data, runner=self.fake_runner, version="retrain-test", **kwargs)
 
-    def real_rows(self, *, train=True, evaluation=True, known=True, newer=False):
+    def real_rows(self, *, train=True, evaluation=True, known=True, newer=False, quad_source=None):
         rows = []
         for split, enabled in (("train", train), ("eval", evaluation)):
             if enabled:
                 rows.append({"capture_id": split, "label": "art" if known else "unknown", "split": split})
+                if quad_source:
+                    rows[-1].update(quad=[[0, 0], [63, 0], [63, 88], [0, 88]], quad_source=quad_source)
                 self.write(self.data / "real" / split / "card.png", b"card")
         if newer:
             rows.append({"capture_id": "eval-newer", "label": "reprint", "split": "eval"})
@@ -268,7 +270,7 @@ class RetrainTest(unittest.TestCase):
         self.assertIn("cardid.evaluate", [c[2] for c in self.commands if len(c) > 2])
 
     def test_detector_last_only_and_real_train_without_eval(self):
-        self.real_rows(evaluation=False)
+        self.real_rows(evaluation=False, quad_source="manual")
         self.last_only = True
         report = self.run_pipeline("--no-update-gallery", "--detector-epochs", "3", "--workers", "2", "--no-publish")
         self.assertEqual(
@@ -311,6 +313,15 @@ class RetrainTest(unittest.TestCase):
             ),
         )
         self.assertFalse((self.data / "nightly" / "state.json").exists())
+
+    def test_detector_trains_synthetic_only_without_trusted_outlines(self):
+        # Imported captures carry the detector's own quads: fine for the recogniser, not the detector.
+        self.real_rows(evaluation=False, quad_source="detector")
+        report = self.run_pipeline("--no-update-gallery", "--detector-epochs", "2", "--no-publish")
+        self.assertEqual(self.commands[2][-1], "--real")
+        detector = next(c for c in self.commands if c[2] == "cardid.train_detector")
+        self.assertNotIn("--real", detector)
+        self.assertEqual(report["detector_real_captures"], 0)
 
     def test_unknown_train_labels_use_synthetic_only(self):
         self.real_rows(evaluation=False, known=False)

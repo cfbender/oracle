@@ -63,3 +63,9 @@ def window_around(img: np.ndarray, cx: float, cy: float, side: float, out: int =
 
 def apply_affine(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return (np.c_[pts, np.ones(len(pts))] @ M.T).astype(np.float32)
+
+
+def trusted_quad(row: dict) -> bool:
+    """Whether a labeled capture's quad is tight enough to supervise the detector."""
+    top5 = row.get("top5") or []
+    return row.get("quad_source") == "manual" or (bool(top5) and top5[0] == row.get("label"))

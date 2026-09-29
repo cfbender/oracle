@@ -11,7 +11,7 @@ from .constants import DET_INPUT, SCENE
 from .data import IMAGENET_MEAN, IMAGENET_STD, to_tensor
 from .degrade import load_rgb
 from .image_bank import ArtBank, CardBank
-from .scene_geometry import apply_affine, window_around
+from .scene_geometry import apply_affine, window_around, trusted_quad
 from .scene_renderer import photometrics, render_scene
 
 
@@ -70,12 +70,6 @@ class SceneDataset(Dataset):
         target = int(self.target_indices[i]) if self.target_indices is not None else None
         scene, quad = render_scene(rng, self.cards, self.arts, target_index=target, profile=self.profile)
         return torch.from_numpy(scene), torch.from_numpy(quad if self.raw else quad / DET_INPUT), torch.tensor(True)
-
-
-def trusted_quad(row: dict) -> bool:
-    """Whether a labeled capture's quad is tight enough to supervise the detector."""
-    top5 = row.get("top5") or []
-    return row.get("quad_source") == "manual" or (bool(top5) and top5[0] == row.get("label"))
 
 
 class RealSceneDataset(Dataset):

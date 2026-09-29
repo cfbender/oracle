@@ -15,6 +15,7 @@ from pathlib import Path
 from . import DATA_DIR, ML_DIR, profiles, sources
 from .corrections import atomic_json, latest_labels
 from .envfile import load_env
+from .scene_geometry import trusted_quad
 from .gallery import printing_index
 from .workflow import (
     check_destination,
@@ -196,6 +197,15 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
             candidate_detector = str(detector)
             if args.detector_epochs:
                 detector_run = version + "-detector"
+                # Real captures train the detector only with outlines a person drew or a top-5
+                # hit confirmed; imported ones carry the detector's own quads, so often none do.
+                trusted = [r for r in real_train if r.get("quad") and trusted_quad(r)]
+                detector_options = ["--workers", str(args.workers)] if args.workers else []
+                if trusted:
+                    detector_options += ["--real"]
+                scenes = os.environ.get("CARDID_SCENE_PROFILE", "table")
+                print(f"detector: {scenes} scenes, {len(trusted)} real captures with trusted outlines", flush=True)
+                report.update(detector_real_captures=len(trusted), detector_scene_profile=scenes)
                 execute(
                     "python",
                     "-m",
@@ -206,7 +216,7 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
                     str(args.detector_epochs),
                     "--run",
                     detector_run,
-                    *training_options,
+                    *detector_options,
                 )
                 candidate_detector = model_output(detector_run, "candidate_detector")
             bundle = data / "bundles" / version
