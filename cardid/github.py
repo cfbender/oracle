@@ -111,5 +111,7 @@ def publish_github(bundle: Path, repo: str, expected_current: str | None = None)
     uploaded = {a["name"]: a["size"] for a in json.loads(gh("release", "view", tag, "--repo", repo, "--json", "assets"))["assets"]}
     wrong = [name for name in names if uploaded.get(name) != (bundle / name).stat().st_size]
     if wrong:
-        raise SystemExit(f"release {tag} is incomplete ({', '.join(wrong)}); delete it with `gh release delete {tag} --repo {repo} --cleanup-tag` and publish again")
+        raise SystemExit(
+            f"release {tag} is incomplete ({', '.join(wrong)}); delete it with `gh release delete {tag} --repo {repo} --cleanup-tag` and publish again"
+        )
     print(f"published {bundle.name} -> github:{repo} ({tag})")
