@@ -24,3 +24,21 @@ run = "uv run --no-sync python -m cardid.scryfall --update"
 [tasks.test]
 description = "Run the CPU-only unit tests."
 run = "uv run --no-sync python -m unittest discover -s cardid -t ."
+
+[tasks.setup-profiles]
+description = "Create ~/.config/cardid/{manavault,the-gathering}.env from profiles/ (existing files are kept)."
+run = '''
+mkdir -p ~/.config/cardid
+for name in manavault the-gathering; do
+  target=~/.config/cardid/$name.env
+  if [ -e "$target" ]; then echo "kept $target"; else install -m 600 profiles/$name.env.example "$target"; echo "created $target"; fi
+done
+'''
+
+[tasks.manavault]
+description = "Pull ManaVault scanner captures, fine-tune, evaluate and publish the ManaVault model."
+run = "uv run --no-sync python -m cardid.retrain --env-file ~/.config/cardid/manavault.env"
+
+[tasks.gathering]
+description = "Pull table corrections, fine-tune, evaluate and publish The Gathering's model."
+run = "uv run --no-sync python -m cardid.retrain --env-file ~/.config/cardid/the-gathering.env"

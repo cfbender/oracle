@@ -11,7 +11,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import DATA_DIR, ML_DIR, sources
+from . import DATA_DIR, ML_DIR, profiles, sources
 from .corrections import atomic_json, latest_labels
 from .envfile import load_env
 from .gallery import printing_index
@@ -243,7 +243,7 @@ def run(args: argparse.Namespace, *, data: Path = DATA_DIR, runner=command, scor
                 execute("python", "-m", "cardid.publish", str(bundle), "--to", args.to, *guard)
                 report["status"] = "published"
                 if not args.dry_run:
-                    state_path = data / "nightly" / "state.json"
+                    state_path = profiles.state_dir(data) / "state.json"
                     state_path.parent.mkdir(parents=True, exist_ok=True)
                     state = json.loads(state_path.read_text()) if state_path.exists() else {}
                     state.update(checkpoint=candidate_checkpoint, detector=candidate_detector, report=str(report_path))

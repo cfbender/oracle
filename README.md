@@ -63,21 +63,43 @@ Rows arrive with `source: manavault-scanner` (and the scan's `finish`), land in 
 with the usual deterministic train/eval split, and feed `train --real`, `evaluate --real` and
 `retrain` (whose held-out gate then includes phone captures).
 
-### One base, one model line per app
+### Two apps on one machine
 
-Both apps start from the same `models/` weights, but their cameras and detection jobs differ
-(a small card anywhere on a webcam table, versus one large card filling a phone frame), so
-fine-tune and publish a separate model for each. Captures from every app can share `data/real/`;
-`CARDID_SOURCES` (or `retrain --sources`) picks which ones a run trains and is evaluated on:
+Both apps start from the same `models/` weights but get their own model, because their cameras
+and detection jobs differ (a small card anywhere on a webcam table, versus one large card
+filling a phone frame). Each app has a profile: an env file with its server, token, publish
+target and capture sources. One-time setup:
 
 ```sh
-CARDID_SOURCES=manavault-scanner mise run retrain -- --to github:cfbender/manavault
-CARDID_SOURCES=webcam-table mise run retrain -- --to nuc:/srv/the-gathering/cardid
+mise run setup-profiles          # creates ~/.config/cardid/{manavault,the-gathering}.env
+${EDITOR:-nano} ~/.config/cardid/manavault.env ~/.config/cardid/the-gathering.env
 ```
 
-Sources are `webcam-table`, `manavault-scanner` and `capture` (the local `cardid.capture`
-tool). Unset uses all of them, which can still help the recogniser, but then each app's
-held-out gate also includes the other app's captures.
+Then each retrain is one command:
+
+```sh
+mise run manavault               # pull phone scans → fine-tune → evaluate → publish to ManaVault
+mise run gathering               # pull table corrections → fine-tune → evaluate → publish to The Gathering
+mise run manavault -- --no-publish   # any retrain flag works after --
+```
+
+Switching needs nothing else. The gallery, images, real captures and runs in `data/` are shared.
+Each run resolves its starting checkpoint from *its own* app's currently published bundle, pulls
+only its own server, trains and is gated on only its own captures (`CARDID_SOURCES`), and keeps
+its bookkeeping in `data/nightly/<profile>/`. Runs never overlap (one lock for both).
+
+Moving an existing single-app setup (The Gathering) over:
+
+```sh
+mkdir -p ~/.config/cardid && mv ~/.config/cardid.env ~/.config/cardid/the-gathering.env
+printf 'CARDID_PROFILE=the-gathering\nCARDID_SOURCES=webcam-table,capture\n' >> ~/.config/cardid/the-gathering.env
+mkdir -p data/nightly/the-gathering && mv data/nightly/state.json data/nightly/the-gathering/ 2>/dev/null
+mise run setup-profiles          # adds the ManaVault profile next to it
+```
+
+For the optional nightly loop, point `CARDID_ENV_FILE` at a profile. Without `CARDID_SOURCES`,
+a run trains on every source, which can still help the recogniser, but its held-out gate then
+includes the other app's captures.
 
 `mise run test` runs the CPU unit tests. The rest of this document is the detailed reference
 for the pipeline, written while it served The Gathering.

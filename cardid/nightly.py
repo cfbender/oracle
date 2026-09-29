@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import DATA_DIR
 from .corrections import REAL, SOURCES, atomic_json, latest_labels, pull
+from .profiles import state_dir
 from .sources import keep
 from .workflow import command, fingerprint, publish_allowed, resolve_checkpoint, score, snapshot_bundle, trained_checkpoint
 
@@ -102,8 +103,9 @@ def main() -> None:
     parser.add_argument("--server", default=os.environ.get("CARDID_SERVER"))
     parser.add_argument("--from-dir", type=Path, default=os.environ.get("CARDID_CORRECTIONS_DIR"))
     parser.add_argument("--real-dir", type=Path, default=REAL)
-    parser.add_argument("--state-dir", type=Path, default=DATA_DIR / "nightly")
+    parser.add_argument("--state-dir", type=Path, help="default data/nightly/<CARDID_PROFILE>")
     args = parser.parse_args()
+    args.state_dir = args.state_dir or state_dir(DATA_DIR)
     args.state_dir.mkdir(parents=True, exist_ok=True)
     run(args)
 
