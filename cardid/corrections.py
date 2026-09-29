@@ -91,7 +91,7 @@ def merge(row: dict, jpeg: bytes, real: Path) -> bool:
     (dest / "crop.jpg").write_bytes(jpeg)
     split = "eval" if int(hashlib.sha1(cid.encode()).hexdigest(), 16) % 5 == 0 else "train"
     origin = row.get("source") if row.get("source") in SOURCES else "webcam-table"
-    label = {**row, "split": split, "source": origin, "quad_source": "detector", "orientation": 0}
+    label = {**row, "label": row.get("label"), "split": split, "source": origin, "quad_source": "detector", "orientation": 0}
     quad = np.asarray(row.get("quad"), dtype=np.float32)
     valid_quad = (
         quad.shape == (4, 2) and np.isfinite(quad).all() and np.abs(quad).max() <= 2048 and cv2.isContourConvex(quad) and abs(cv2.contourArea(quad)) > 16

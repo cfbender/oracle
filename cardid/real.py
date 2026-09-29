@@ -43,7 +43,8 @@ def load_labels(split: str | None = None) -> list[dict]:
     latest: dict[str, dict] = {}
     for r in rows:
         latest[r["capture_id"]] = r
-    out = keep([r for r in latest.values() if r["label"] and (REAL_DIR / r["capture_id"] / "card.png").exists()])
+    # .get: skipped captures may carry no label at all (older ManaVault exports).
+    out = keep([r for r in latest.values() if r.get("label") and (REAL_DIR / r["capture_id"] / "card.png").exists()])
     if split:
         out = [r for r in out if r["split"] == split]
     return out

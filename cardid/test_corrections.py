@@ -202,6 +202,19 @@ class CorrectionsTest(unittest.TestCase):
         merge({**self.row, "source": "elsewhere", "label": LABEL.replace("1", "3")}, self.jpeg, self.real)
         self.assertEqual(latest_labels(self.real)[CID]["source"], "webcam-table")
 
+    def test_skip_without_a_label_field_is_imported_as_a_null_label(self):
+        from . import real
+
+        self.assertTrue(merge(self.row, self.jpeg, self.real))
+        skipped = {k: v for k, v in self.row.items() if k != "label"}
+        self.assertTrue(merge({**skipped, "source": "manavault-scanner"}, self.jpeg, self.real))
+        self.assertIsNone(latest_labels(self.real)[CID]["label"])
+        # Rows written before the importer normalised the field must not break training.
+        with (self.real / "labels.jsonl").open("a") as f:
+            f.write(json.dumps({"capture_id": CID, "split": "train", "source": "manavault-scanner"}) + "\n")
+        with patch.object(real, "LABELS", self.real / "labels.jsonl"), patch.object(real, "REAL_DIR", self.real):
+            self.assertEqual(real.load_labels("train"), [])
+
     def test_refused_token_names_the_server_reason(self):
         def handle(request):
             return httpx.Response(401, json={"errors": [{"message": "Invalid scanner corrections token"}]})
