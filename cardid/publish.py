@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
 import re
 import shlex
 import shutil
@@ -124,6 +125,7 @@ def _publish_local(bundle: Path, dest: Path, keep: int | None) -> None:
     shutil.copytree(bundle, incoming)
     target = dest / bundle.name
     incoming.rename(target)
+    os.utime(target)  # copytree copies the export's mtime; pruning orders by publish time
     if current.is_symlink():
         previous = dest / "previous.tmp"
         previous.unlink(missing_ok=True)
@@ -137,7 +139,7 @@ def _publish_local(bundle: Path, dest: Path, keep: int | None) -> None:
     if keep:
         versions = sorted(
             (p for p in dest.iterdir() if p.is_dir() and not p.is_symlink() and (p / "manifest.json").exists()),
-            key=lambda p: p.stat().st_mtime,
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
             reverse=True,
         )
         protected = {current.resolve(), (dest / "previous").resolve()}
