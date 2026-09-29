@@ -15,8 +15,8 @@ from pathlib import Path
 from . import DATA_DIR, ML_DIR, profiles, sources
 from .corrections import atomic_json, latest_labels
 from .envfile import load_env
-from .scene_geometry import trusted_quad
 from .gallery import printing_index
+from .scene_geometry import trusted_quad
 from .workflow import (
     check_destination,
     command,

@@ -11,7 +11,7 @@ from .constants import DET_INPUT, SCENE
 from .data import IMAGENET_MEAN, IMAGENET_STD, to_tensor
 from .degrade import load_rgb
 from .image_bank import ArtBank, CardBank
-from .scene_geometry import apply_affine, window_around, trusted_quad
+from .scene_geometry import apply_affine, trusted_quad, window_around
 from .scene_renderer import photometrics, render_scene
 
 
