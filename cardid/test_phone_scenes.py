@@ -67,6 +67,19 @@ class PhoneScenesTest(unittest.TestCase):
         self.assertEqual(render.call_count, 8)
         self.assertEqual({call.kwargs["profile"] for call in render.call_args_list}, {"table", "phone"})
 
+    def test_held_out_detector_eval_uses_only_trusted_outlines(self):
+        from . import real
+
+        for capture_id in ("imported", "drawn"):
+            (self.root / capture_id).mkdir()
+            (self.root / capture_id / "crop.jpg").write_bytes(b"jpg")
+        quad = [[0, 0], [10, 0], [10, 14], [0, 14]]
+        imported = {"capture_id": "imported", "label": "a", "quad": quad, "quad_source": "detector", "top5": []}
+        drawn = {**imported, "capture_id": "drawn", "quad_source": "manual"}
+        with patch.object(real, "REAL_DIR", self.root):
+            self.assertIsNone(train_detector.real_eval_set([imported]))
+            self.assertEqual([r["capture_id"] for r in train_detector.real_eval_set([imported, drawn]).rows], ["drawn"])
+
 
 if __name__ == "__main__":
     unittest.main()

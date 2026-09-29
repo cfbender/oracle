@@ -142,6 +142,13 @@ def eval_scenes(
     return metrics
 
 
+def real_eval_set(rows: list[dict]) -> RealSceneDataset | None:
+    """Held-out captures whose outlines are trusted ground truth, or None when there are none
+    (imported captures carry the detector's own quads, which would only score noise)."""
+    held_out = RealSceneDataset(rows, augment=False)
+    return held_out if held_out.rows else None
+
+
 @torch.no_grad()
 def eval_real(model: CornerNet, dataset: RealSceneDataset, device: torch.device) -> dict:
     """Single-pass error on the click windows, plus the end-to-end two-stage locate on the
@@ -200,11 +207,9 @@ def main() -> None:
     write_run_metadata(run_dir, args, runtime)
     synth = SceneDataset(args.samples, seed=args.seed, profile=args.scene_profile)
     train_set = synth
-    real_eval = None
     real_sets = []
-    eval_rows = [r for r in load_labels("eval") if r.get("quad")]
-    if eval_rows:
-        real_eval = RealSceneDataset(eval_rows, augment=False)
+    real_eval = real_eval_set(load_labels("eval"))
+    eval_rows = real_eval.rows if real_eval else []
     if args.real:
         real_train = RealSceneDataset(load_labels("train"), repeat=args.real_repeat, seed=args.seed + 1)
         if not len(real_train):
