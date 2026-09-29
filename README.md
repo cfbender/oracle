@@ -101,12 +101,27 @@ The ManaVault profile also fine-tunes the detector (`CARDID_DETECTOR_EPOCHS=4`) 
 scanner scenes (`CARDID_SCENE_PROFILE=phone`, or `train_detector --scene-profile phone`): one
 large, near-upright card (sometimes upside down) on a stand-like background, stronger keystone,
 more foil glare, phone defocus and the app's dark padding bars, with 20% table scenes mixed in.
-Real captures cannot teach the detector (their outlines came from the detector itself, so
-`trusted_quad` skips them); only hand-drawn quads from `cardid.capture` are used.
 
 For the optional nightly loop, point `CARDID_ENV_FILE` at a profile. Without `CARDID_SOURCES`,
 a run trains on every source, which can still help the recogniser, but its held-out gate then
 includes the other app's captures.
+
+### Trusted outlines for the detector
+
+A capture's outline usually came from the detector itself, so training the detector on it would
+only teach its own error: `trusted_quad` skips those. Outlines a person drew or confirmed
+arrive with `quad_source: "manual"` and are ground truth:
+
+- ManaVault's scanner, with **Check outlines** on, pauses on each logged scan so you can confirm
+  the outline or drag its corners onto the card.
+- The Gathering's webcam table: Shift+click the four corners of a card, then pick it.
+- `cardid.capture`: drawing the quad by hand.
+
+`corrections pull` keeps an uploaded `manual` source unless the outline is implausible (a
+sliver, or two corners on one spot), and re-warps `card.png` when an outline changes.
+`retrain` passes `--real` to the detector only when trusted outlines exist; its report records
+`detector_real_captures`. The held-out split then scores the detector on real outlines and
+picks its checkpoint by that score. Without trusted outlines it trains on synthetic scenes alone.
 
 `mise run test` runs the CPU unit tests. The rest of this document is the detailed reference
 for the pipeline, written while it served The Gathering.

@@ -6,7 +6,8 @@
 
 A bare server URL uses The Gathering's `/api/cardid/corrections`; a URL with a path is the
 corrections endpoint itself (ManaVault's scanner serves `/api/scanner/corrections`). Rows
-keep their `source` (`webcam-table` or `manavault-scanner`).
+keep their `source` (`webcam-table` or `manavault-scanner`) and `quad_source` (`manual` for an
+outline a person drew or confirmed, otherwise `detector`).
 
 HTTP uses CARDID_CORRECTIONS_TOKEN (read-only admin export capability). Never put it in argv.
 The append cursor advances only after a whole page is imported; retrying is idempotent.
@@ -36,6 +37,9 @@ ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 GALLERY_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:-1)?\Z")
 REAL = DATA_DIR / "real"
 SOURCES = frozenset({"webcam-table", "manavault-scanner"})
+# Who placed the outline: the detector, or a person who drew or confirmed its corners. Only
+# manual outlines supervise the detector (`scene_geometry.trusted_quad`).
+QUAD_SOURCES = frozenset({"detector", "manual"})
 DEFAULT_ENDPOINT = "/api/cardid/corrections"
 
 
@@ -69,11 +73,22 @@ def capture_id(row: dict) -> str:
     return value
 
 
-def merge(row: dict, jpeg: bytes, real: Path) -> bool:
-    """Last label wins, including skips. Unknown quads stay pending (no card.png).
+def plausible_outline(quad: np.ndarray) -> bool:
+    """Whether a drawn outline could be a card seen by a webcam or phone: no sliver or
+    near-degenerate corner from a slipped click. The aspect bound is loose because a table
+    camera's steep view foreshortens cards well past their printed 63 x 88."""
+    edges = np.linalg.norm(np.roll(quad, -1, axis=0) - quad, axis=1)
+    pairs = sorted([edges[0] + edges[2], edges[1] + edges[3]])
+    return bool(edges.min() >= 12 and pairs[0] / pairs[1] >= 0.35)
 
-    This confirms identity, not detector geometry/orientation. Do not invent up_correct.
-    The ordered quad is used as supplied, with orientation=0 relative to that quad.
+
+def merge(row: dict, jpeg: bytes, real: Path) -> bool:
+    """Last label wins, including skips, and a changed outline re-warps card.png. Unknown
+    quads stay pending (no card.png).
+
+    The label confirms identity. The outline's geometry is trusted only when a person drew or
+    confirmed it (`quad_source: "manual"`); anything else is the detector's own. Do not invent
+    up_correct. The ordered quad is used as supplied, with orientation=0 relative to that quad.
     """
     cid = capture_id(row)
     dest = real / cid
@@ -90,11 +105,15 @@ def merge(row: dict, jpeg: bytes, real: Path) -> bool:
     (dest / "crop.jpg").write_bytes(jpeg)
     split = "eval" if int(hashlib.sha1(cid.encode()).hexdigest(), 16) % 5 == 0 else "train"
     origin = row.get("source") if row.get("source") in SOURCES else "webcam-table"
-    label = {**row, "label": row.get("label"), "split": split, "source": origin, "quad_source": "detector", "orientation": 0}
     quad = np.asarray(row.get("quad"), dtype=np.float32)
     valid_quad = (
         quad.shape == (4, 2) and np.isfinite(quad).all() and np.abs(quad).max() <= 2048 and cv2.isContourConvex(quad) and abs(cv2.contourArea(quad)) > 16
     )
+    quad_source = row.get("quad_source") if row.get("quad_source") in QUAD_SOURCES else "detector"
+    if quad_source == "manual" and not (valid_quad and plausible_outline(quad)):
+        print(f"implausible drawn outline, not trusted for the detector: {cid}")
+        quad_source = "detector"
+    label = {**row, "label": row.get("label"), "split": split, "source": origin, "quad_source": quad_source, "orientation": 0}
     card_path = dest / "card.png"
     if row.get("label") and valid_quad:
         card = warp_card(rgb, quad)

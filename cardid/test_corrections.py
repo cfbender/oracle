@@ -59,6 +59,31 @@ class CorrectionsTest(unittest.TestCase):
         self.assertFalse((self.real / CID / "card.png").exists())
         self.assertEqual(len((self.real / "labels.jsonl").read_text().splitlines()), 3)
 
+    def test_drawn_outlines_are_trusted_only_when_plausible_and_rewarp_the_card(self):
+        from .scene_geometry import trusted_quad
+
+        merge(self.row, self.jpeg, self.real)
+        imported = latest_labels(self.real)[CID]
+        self.assertEqual(imported["quad_source"], "detector")
+        self.assertFalse(trusted_quad(imported))
+        before = (self.real / CID / "card.png").read_bytes()
+        # A person moves the corners onto the card: the capture becomes detector ground truth
+        # and card.png is warped from the new outline.
+        drawn = {**self.row, "quad": [[40, 20], [290, 22], [288, 370], [42, 368]], "quad_source": "manual"}
+        self.assertTrue(merge(drawn, self.jpeg, self.real))
+        saved = latest_labels(self.real)[CID]
+        self.assertEqual(saved["quad_source"], "manual")
+        self.assertTrue(trusted_quad(saved))
+        self.assertNotEqual((self.real / CID / "card.png").read_bytes(), before)
+        for quad, source in [
+            (drawn["quad"], "robot"),  # unknown sources are the detector's
+            ([[40, 20], [290, 20], [290, 30], [40, 30]], "manual"),  # a sliver from a slipped click
+            ([[40, 20], [45, 20], [290, 370], [40, 370]], "manual"),  # two corners on one spot
+        ]:
+            with self.subTest(quad=quad, source=source), redirect_stdout(io.StringIO()):
+                merge({**self.row, "quad": quad, "quad_source": source}, self.jpeg, self.real)
+                self.assertFalse(trusted_quad(latest_labels(self.real)[CID]))
+
     def test_face_label_round_trip_and_rejection(self):
         from . import data, real
 
