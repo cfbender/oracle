@@ -141,7 +141,7 @@ class GitHubPublishTest(unittest.TestCase):
         self.assertEqual(source, target + "/current")
         self.assertEqual(json.loads(path.read_text())["version"], "local")
 
-        baseline, manifest, digest = snapshot_bundle(source, self.root / "snap-root")
+        baseline, _manifest, digest = snapshot_bundle(source, self.root / "snap-root")
         self.assertEqual(baseline.name, "local")
         self.assertEqual(digest, sha256(local / "manifest.json"))
 
