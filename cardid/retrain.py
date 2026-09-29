@@ -11,7 +11,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import DATA_DIR, ML_DIR
+from . import DATA_DIR, ML_DIR, sources
 from .corrections import atomic_json, latest_labels
 from .envfile import load_env
 from .gallery import printing_index
@@ -56,7 +56,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-publish", action="store_true")
     parser.add_argument("--force", action="store_true", help="publish even if comparable held-out top-1 regresses; never bypass parity/concurrency checks")
     parser.add_argument("--dry-run", action="store_true", help="read manifests/checkpoints and print the plan; do not pull, train, export or publish")
+    parser.add_argument(
+        "--sources",
+        default=os.environ.get(sources.ENV),
+        help="comma-separated real capture sources to train and evaluate on (webcam-table, manavault-scanner, capture); default all",
+    )
     args = parser.parse_args(argv)
+    if args.sources:
+        # Child train/evaluate processes read the same filter from the environment.
+        os.environ[sources.ENV] = args.sources
     if args.server is None and args.from_dir is None:
         args.server = os.environ.get("CARDID_SERVER")
         directory = os.environ.get("CARDID_CORRECTIONS_DIR")
@@ -69,7 +77,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def usable_rows(data: Path) -> list[dict]:
-    return [r for r in latest_labels(data / "real").values() if r.get("label") and (data / "real" / r["capture_id"] / "card.png").is_file()]
+    rows = [r for r in latest_labels(data / "real").values() if r.get("label") and (data / "real" / r["capture_id"] / "card.png").is_file()]
+    return sources.keep(rows)
 
 
 def train_rows(data: Path, rows: list[dict]) -> list[dict]:

@@ -24,6 +24,7 @@ from .data import art_path, to_tensor
 from .degrade import INPUT_SIZE, clean_view, load_rgb
 from .detect import CARD_H, CARD_W, FRAME_ROTATIONS, art_crops, frame_box, frame_of
 from .gallery import printing_index
+from .sources import keep
 
 REAL_DIR = DATA_DIR / "real"
 LABELS = REAL_DIR / "labels.jsonl"
@@ -42,7 +43,7 @@ def load_labels(split: str | None = None) -> list[dict]:
     latest: dict[str, dict] = {}
     for r in rows:
         latest[r["capture_id"]] = r
-    out = [r for r in latest.values() if r["label"] and (REAL_DIR / r["capture_id"] / "card.png").exists()]
+    out = keep([r for r in latest.values() if r["label"] and (REAL_DIR / r["capture_id"] / "card.png").exists()])
     if split:
         out = [r for r in out if r["split"] == split]
     return out
