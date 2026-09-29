@@ -107,12 +107,38 @@ def background(rng: np.random.Generator, arts: ArtBank, size: int) -> np.ndarray
         grain = cv2.resize(grain, (size, size), interpolation=cv2.INTER_LINEAR)
         bg = cv2.merge([grain, grain, grain])
         cv2.add(bg, (*(float(c) for c in col), 0.0), dst=bg)
-    # uneven lighting across the table: a linear ramp, so it separates into a row and a column
-    # vector (no full-size meshgrid)
+    uneven_light(bg, rng, size, 0.25)
+    return np.clip(bg, 0, 255, out=bg)
+
+
+def uneven_light(bg: np.ndarray, rng: np.random.Generator, size: int, strength: float) -> None:
+    """Uneven lighting across the surface: a linear ramp, so it separates into a row and a
+    column vector (no full-size meshgrid)."""
     ramp = (np.arange(size, dtype=np.float32) / size - 0.5) * 2
-    gx, gy = rng.uniform(-0.25, 0.25, size=2).astype(np.float32)
+    gx, gy = rng.uniform(-strength, strength, size=2).astype(np.float32)
     light = 1 + gx * ramp[None, :] + gy * ramp[:, None]
     cv2.multiply(bg, cv2.merge([light, light, light]), dst=bg)
+
+
+def stand_background(rng: np.random.Generator, arts: ArtBank, size: int) -> np.ndarray:
+    """A phone scanner stand or desk seen close up: a plain surface with a few large, out of
+    focus panels (the stand's walls and ledges), whose straight edges sit near the card."""
+    if rng.random() < 0.3:
+        return background(rng, arts, size)
+    palette = np.float32([[235, 228, 225], [215, 215, 220], [245, 245, 240], [60, 60, 65], [25, 25, 28], [150, 110, 80]])
+    base = palette[int(rng.integers(len(palette)))] * rng.uniform(0.85, 1.08)
+    bg = np.empty((size, size, 3), dtype=np.float32)
+    bg[:] = base
+    for _ in range(int(rng.integers(1, 4))):
+        x0, y0 = (rng.uniform(-0.2, 0.8, size=2) * size).astype(int)
+        w, h = (rng.uniform(0.3, 1.0, size=2) * size).astype(int)
+        shade = tuple(float(v) for v in np.clip(base * rng.uniform(0.75, 1.15), 0, 255))
+        cv2.rectangle(bg, (int(x0), int(y0)), (int(x0 + w), int(y0 + h)), shade, -1)
+    bg = cv2.GaussianBlur(bg, (0, 0), rng.uniform(1.5, 8.0))
+    grain = (rng.random(size=(size // 2, size // 2), dtype=np.float32) - 0.5) * np.float32(rng.uniform(1, 6) * np.sqrt(12))
+    grain = cv2.resize(grain, (size, size), interpolation=cv2.INTER_LINEAR)
+    cv2.add(bg, cv2.merge([grain, grain, grain]), dst=bg)
+    uneven_light(bg, rng, size, 0.35)
     return np.clip(bg, 0, 255, out=bg)
 
 
@@ -302,6 +328,10 @@ def photometrics(img: np.ndarray, rng: np.random.Generator, scale: float = DET_I
     return cv2.cvtColor(cv2.imdecode(enc, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
 
 
+PROFILES = ("table", "phone")
+PHONE_SHARE = 0.8  # the rest of a phone profile's scenes are table scenes, for loose cards
+
+
 def render_scene(
     rng: np.random.Generator,
     cards: CardBank,
@@ -309,11 +339,19 @@ def render_scene(
     size: int = SCENE,
     out: int = DET_INPUT,
     target_index: int | None = None,
+    profile: str = "table",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compose a `size` x `size` native-pixel window and return it downscaled to `out` x `out`
     RGB uint8 with the 4x2 float32 printed-order corners of the clicked card in `out` pixels.
     `target_index` fixes the clicked scan for layout-stratified evaluation. Full scans retain
-    both halves, their text and rotations; never paint a small half into a modern art box."""
+    both halves, their text and rotations; never paint a small half into a modern art box.
+
+    `profile` "table" is The Gathering's webcam table (the default, unchanged); "phone" is
+    ManaVault's phone scanner (`render_phone_scene`) for PHONE_SHARE of the scenes."""
+    if profile not in PROFILES:
+        raise ValueError(f"unknown scene profile {profile!r}; expected one of {PROFILES}")
+    if profile == "phone" and rng.random() < PHONE_SHARE:
+        return render_phone_scene(rng, cards, arts, size, out, target_index)
     canvas = background(rng, arts, size)
     # short side of the clicked card: ~70 px (1080p over a 4-player table) to ~380 (4K, close)
     short = float(np.exp(rng.uniform(np.log(70), np.log(380))))
@@ -342,5 +380,67 @@ def render_scene(
     elif rng.random() < 0.25:  # foil or a glossy unsleeved card
         gloss(canvas, rng, card_alpha, quad)
     occluders(canvas, rng, quad, cards, detail=out / size)
+    small = cv2.resize(np.clip(canvas, 0, 255, out=canvas).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA)
+    return photometrics(small, rng, out / size), (quad * (out / size)).astype(np.float32)
+
+
+def render_phone_scene(
+    rng: np.random.Generator,
+    cards: CardBank,
+    arts: ArtBank,
+    size: int = SCENE,
+    out: int = DET_INPUT,
+    target_index: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """ManaVault's scanner: the whole phone frame (long side `size`) holding one large card,
+    near upright (sometimes upside down), usually alone on a stand, with stronger keystone
+    than a table camera, more foil glare, phone defocus, and sometimes the dark bars the app
+    pads a portrait or landscape frame with. Same outputs as `render_scene`."""
+    canvas = stand_background(rng, arts, size)
+    # a stand or hand-held phone: the card's short side is a large share of the frame
+    short = float(np.exp(rng.uniform(np.log(110), np.log(360))))
+    angle = (180.0 if rng.random() < 0.15 else 0.0) + float(np.clip(rng.normal(0, 5), -15, 15))
+    quad = quad_from_pose(0, 0, short, angle, rng)
+    if rng.random() < 0.5:
+        # the phone is not parallel to the card: shrink the top or the bottom edge
+        pair = [0, 1] if rng.random() < 0.5 else [3, 2]
+        mid = quad[pair].mean(axis=0)
+        quad[pair] = mid + (quad[pair] - mid) * rng.uniform(0.82, 0.97)
+    # the frame centre lies on the card (the scanner's first detector window is centred there)
+    u, v = rng.uniform(0.2, 0.8), rng.uniform(0.2, 0.8)
+    click = (1 - v) * ((1 - u) * quad[0] + u * quad[1]) + v * ((1 - u) * quad[3] + u * quad[2])
+    quad = quad - click + np.float32([size / 2, size / 2]) + rng.uniform(-12, 12, size=2).astype(np.float32)
+    if rng.random() < 0.1:  # the next card of the pile peeking out underneath
+        q = quad + rng.uniform(-0.25, 0.25, size=2).astype(np.float32) * short
+        draw_card(canvas, rng, cards, q, detail=out / size)
+    sleeved = rng.random() < 0.35
+    loader_alpha = draw_toploader(canvas, rng, quad) if rng.random() < 0.05 else None
+    ring_alpha = None
+    if sleeved:
+        _, ring_alpha = draw_sleeve_ring(canvas, rng, quad)
+    card_alpha = draw_card(canvas, rng, cards, quad, shadow=not sleeved, detail=out / size, index=target_index)
+    if loader_alpha is not None:
+        alpha = np.maximum(card_alpha, loader_alpha) if ring_alpha is None else np.maximum(np.maximum(card_alpha, ring_alpha), loader_alpha)
+        gloss(canvas, rng, alpha, quad)
+    elif sleeved:
+        gloss(canvas, rng, np.maximum(card_alpha, ring_alpha), quad)
+    elif rng.random() < 0.45:  # foils glare much more at phone distance
+        gloss(canvas, rng, card_alpha, quad)
+    if rng.random() < 0.2:
+        occluders(canvas, rng, quad, cards, detail=out / size)
+    if rng.random() < 0.4:
+        # the app fits the camera image into a square with dark bars, left/right or top/bottom
+        axis = 0 if rng.random() < 0.7 else 1
+        room = min(quad[:, axis].min(), size - quad[:, axis].max()) - 4
+        if room > 20:
+            bar = int(rng.uniform(20, room))
+            if axis == 0:
+                canvas[:, :bar] = 18
+                canvas[:, size - bar :] = 18
+            else:
+                canvas[:bar] = 18
+                canvas[size - bar :] = 18
+    if rng.random() < 0.5:  # close-up focus misses
+        canvas = cv2.GaussianBlur(np.clip(canvas, 0, 255), (0, 0), rng.uniform(1.0, 5.0))
     small = cv2.resize(np.clip(canvas, 0, 255, out=canvas).astype(np.uint8), (out, out), interpolation=cv2.INTER_AREA)
     return photometrics(small, rng, out / size), (quad * (out / size)).astype(np.float32)

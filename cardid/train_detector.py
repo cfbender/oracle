@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 
 import cv2
@@ -46,6 +47,7 @@ from .image_bank import TWO_PART_RATE, ArtBank, CardBank
 from .real import REAL_DIR, load_labels
 from .scene_datasets import RealSceneDataset, SceneDataset, batch_to_input
 from .scene_geometry import quad_short
+from .scene_renderer import PROFILES
 from .training_runtime import add_runtime_args, make_loader, setup, write_run_metadata
 
 HIT = 0.05
@@ -58,11 +60,14 @@ def validation_targets(cards: CardBank, n: int, seed: int) -> np.ndarray:
     return np.array([cards.sample_index(rng, two_part_rate=float(i % 4 == 0)) for i in range(n)])
 
 
-def val_scenes(n: int, workers: int, seed: int = 999) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def val_scenes(n: int, workers: int, seed: int = 999, profile: str = "table") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Fixed scenes, portrait quads (px), and clicked-card groups. Bank/manifest changes
-    invalidate the cache; old ungrouped det-val files are deliberately never reused."""
+    invalidate the cache; old ungrouped det-val files are deliberately never reused. The table
+    profile keeps its original cache key."""
     cards, arts = CardBank(), ArtBank()
     identity = f"grouped-v1:{cards.path.name}:{arts.path.name}:{TWO_PART_RATE}:{','.join(cards.groups)}"
+    if profile != "table":
+        identity += f":{profile}"
     key = hashlib.sha1(identity.encode()).hexdigest()[:12]
     cache = DATA_DIR / f"det-val-{n}-{seed}-{key}.npz"
     if cache.exists():
@@ -70,7 +75,7 @@ def val_scenes(n: int, workers: int, seed: int = 999) -> tuple[np.ndarray, np.nd
             return z["scenes"], z["quads"], z["groups"]
     indices = validation_targets(cards, n, seed)
     groups = cards.groups[indices]
-    dataset = SceneDataset(n, cards=cards, arts=arts, seed=seed, raw=True, target_indices=indices)
+    dataset = SceneDataset(n, cards=cards, arts=arts, seed=seed, raw=True, target_indices=indices, profile=profile)
     loader = DataLoader(dataset, batch_size=32, num_workers=workers, worker_init_fn=worker_init)
     scenes, quads = [], []
     for s, q, _ in tqdm(loader, desc="val scenes", leave=False):
@@ -178,6 +183,12 @@ def main() -> None:
         "--no-pin", action="store_true", help="do not stage batches in pinned host memory (try if bench_loader shows the loader capped regardless of workers)"
     )
     parser.add_argument("--resume")
+    parser.add_argument(
+        "--scene-profile",
+        choices=PROFILES,
+        default=os.environ.get("CARDID_SCENE_PROFILE", "table"),
+        help="synthetic scenes: table (The Gathering's webcam) or phone (ManaVault's scanner); default CARDID_SCENE_PROFILE or table",
+    )
     parser.add_argument("--real", action="store_true", help="mix in the train split of labeled real captures from data/real")
     parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")
     args = parser.parse_args()
@@ -187,7 +198,7 @@ def main() -> None:
     run_dir = RUNS_DIR / args.run
     run_dir.mkdir(parents=True, exist_ok=True)
     write_run_metadata(run_dir, args, runtime)
-    synth = SceneDataset(args.samples, seed=args.seed)
+    synth = SceneDataset(args.samples, seed=args.seed, profile=args.scene_profile)
     train_set = synth
     real_eval = None
     real_sets = []
@@ -202,7 +213,7 @@ def main() -> None:
         print(f"real captures: {len(real_train.rows)} train x{args.real_repeat}, {len(eval_rows)} eval")
         train_set = ConcatDataset([synth, real_train])
     loader = make_loader(train_set, args.batch, runtime, pin_memory=runtime.pin_memory and not args.no_pin)
-    scenes, quads, groups = val_scenes(args.val, runtime.workers)
+    scenes, quads, groups = val_scenes(args.val, runtime.workers, profile=args.scene_profile)
     if not synth.cards.two_part:
         print("WARNING: no two-part scans; run python -m cardid.scryfall --two-part-cards")
 

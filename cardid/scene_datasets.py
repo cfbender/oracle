@@ -46,8 +46,10 @@ class SceneDataset(Dataset):
         seed: int = 0,
         raw: bool = False,
         target_indices: np.ndarray | None = None,
+        profile: str = "table",
     ):
         self.length = length
+        self.profile = profile
         self.cards = cards or CardBank()
         self.arts = arts if arts is not None else ArtBank()
         self.cards.build()  # in the parent, so workers find the cache instead of each building it
@@ -66,7 +68,7 @@ class SceneDataset(Dataset):
     def __getitem__(self, i: int):
         rng = np.random.default_rng([self.seed, self.epoch, i])
         target = int(self.target_indices[i]) if self.target_indices is not None else None
-        scene, quad = render_scene(rng, self.cards, self.arts, target_index=target)
+        scene, quad = render_scene(rng, self.cards, self.arts, target_index=target, profile=self.profile)
         return torch.from_numpy(scene), torch.from_numpy(quad if self.raw else quad / DET_INPUT), torch.tensor(True)
 
 

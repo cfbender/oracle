@@ -50,7 +50,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--detector", type=Path, help="explicit detector; overrides manifest resolution")
     parser.add_argument("--to", default=os.environ.get("CARDID_PUBLISH_TO"), help="publish destination: local directory, user@host:/path or github:OWNER/REPO")
     parser.add_argument("--epochs", type=positive, default=os.environ.get("CARDID_RETRAIN_EPOCHS", "4"))
-    parser.add_argument("--detector-epochs", type=positive, help="also fine-tune the detector (off by default)")
+    parser.add_argument(
+        "--detector-epochs",
+        type=positive,
+        default=os.environ.get("CARDID_DETECTOR_EPOCHS"),
+        help="also fine-tune the detector (off by default; CARDID_DETECTOR_EPOCHS); scenes follow CARDID_SCENE_PROFILE",
+    )
     parser.add_argument("--workers", type=positive, default=os.environ.get("CARDID_WORKERS"))
     parser.add_argument("--update-gallery", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--no-publish", action="store_true")

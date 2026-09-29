@@ -97,6 +97,13 @@ mkdir -p data/nightly/the-gathering && mv data/nightly/state.json data/nightly/t
 mise run setup-profiles          # adds the ManaVault profile next to it
 ```
 
+The ManaVault profile also fine-tunes the detector (`CARDID_DETECTOR_EPOCHS=4`) on phone
+scanner scenes (`CARDID_SCENE_PROFILE=phone`, or `train_detector --scene-profile phone`): one
+large, near-upright card (sometimes upside down) on a stand-like background, stronger keystone,
+more foil glare, phone defocus and the app's dark padding bars, with 20% table scenes mixed in.
+Real captures cannot teach the detector (their outlines came from the detector itself, so
+`trusted_quad` skips them); only hand-drawn quads from `cardid.capture` are used.
+
 For the optional nightly loop, point `CARDID_ENV_FILE` at a profile. Without `CARDID_SOURCES`,
 a run trains on every source, which can still help the recogniser, but its held-out gate then
 includes the other app's captures.
