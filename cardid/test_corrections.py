@@ -202,6 +202,19 @@ class CorrectionsTest(unittest.TestCase):
         merge({**self.row, "source": "elsewhere", "label": LABEL.replace("1", "3")}, self.jpeg, self.real)
         self.assertEqual(latest_labels(self.real)[CID]["source"], "webcam-table")
 
+    def test_refused_token_names_the_server_reason(self):
+        def handle(request):
+            return httpx.Response(401, json={"errors": [{"message": "Invalid scanner corrections token"}]})
+
+        client = httpx.Client(transport=httpx.MockTransport(handle))
+        with patch("cardid.corrections.httpx.Client", return_value=client), patch.dict("os.environ", CARDID_CORRECTIONS_TOKEN="test-token"):
+            with self.assertRaises(SystemExit) as refused:
+                pull(self.real, "https://vault.example.com/api/scanner/corrections")
+        message = str(refused.exception)
+        self.assertIn("Invalid scanner corrections token", message)
+        self.assertIn("SCANNER_CORRECTIONS_TOKEN", message)
+        self.assertNotIn("test-token", message)
+
     def test_gate_rejects_regression_empty_changed_eval_and_no_new_data(self):
         base = {"count": 5, "correct": 4, "captures": "same"}
         self.assertTrue(publish_allowed(True, base, base))

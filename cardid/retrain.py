@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import shlex
+import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -275,7 +276,11 @@ def main() -> None:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise SystemExit("another nightly/retrain run is active") from None
-        run(args)
+        try:
+            run(args)
+        except subprocess.CalledProcessError as error:
+            # The step printed its own reason above; skip the second traceback.
+            raise SystemExit(f"retrain stopped: `{shlex.join(map(str, error.cmd))}` failed (exit {error.returncode}); see its message above") from None
 
 
 if __name__ == "__main__":

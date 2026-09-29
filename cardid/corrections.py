@@ -112,6 +112,22 @@ def merge(row: dict, jpeg: bytes, real: Path) -> bool:
     return True
 
 
+def refused(response: httpx.Response) -> None:
+    """Turn an auth refusal into a readable error naming the server's reason."""
+    if response.status_code not in (401, 403):
+        return
+    try:
+        reason = "; ".join(e.get("message") or e.get("detail") or "" for e in response.json().get("errors", []))
+    except ValueError:
+        reason = ""
+    raise SystemExit(
+        f"{response.url.copy_with(query=None)} refused the corrections token (HTTP {response.status_code})"
+        + (f": {reason}" if reason else "")
+        + ". Check that CARDID_CORRECTIONS_TOKEN matches the server's token"
+        + " (ManaVault: SCANNER_CORRECTIONS_TOKEN; The Gathering: CARDID_CORRECTIONS_TOKEN) and that the server was restarted after setting it."
+    )
+
+
 def pull(real: Path = REAL, server: str | None = None, from_dir: Path | None = None) -> int:
     real.mkdir(parents=True, exist_ok=True)
     with (real / ".corrections.lock").open("w") as lock:
@@ -120,7 +136,7 @@ def pull(real: Path = REAL, server: str | None = None, from_dir: Path | None = N
             return sum(merge(row, (from_dir / capture_id(row) / "crop.jpg").read_bytes(), real) for row in latest_labels(from_dir).values())
         if not server or not server.startswith("https://"):
             raise ValueError("--server / CARDID_SERVER must use HTTPS (or use --from-dir)")
-        token = os.environ.get("CARDID_CORRECTIONS_TOKEN")
+        token = (os.environ.get("CARDID_CORRECTIONS_TOKEN") or "").strip()
         if not token:
             raise ValueError("set CARDID_CORRECTIONS_TOKEN in the environment")
         server = server.rstrip("/")
@@ -132,6 +148,7 @@ def pull(real: Path = REAL, server: str | None = None, from_dir: Path | None = N
         with httpx.Client(headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=60) as client:
             while True:
                 response = client.get(endpoint, params={"cursor": cursor})
+                refused(response)
                 response.raise_for_status()
                 page = response.json()["data"]
                 for row in page["corrections"]:
