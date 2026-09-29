@@ -6,6 +6,9 @@ graphs plus the gallery index) that apps run with onnxruntime-web. Nothing here 
 server. It was extracted with its history from The Gathering's `ml/` directory; the Python
 package and entry points are still `cardid` (`python -m cardid.<module>`).
 
+To improve the models, contribute photos or outlines, or test a bundle in either app, start with
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Apps and where their bundles go
 
 | App | Uses it for | Publish with | Picked up |
