@@ -21,6 +21,10 @@ Both apps start from the same `models/` weights but get their own model. Each ap
 | `CARDID_RETRAIN_EPOCHS`, `CARDID_WORKERS` | recogniser epochs (default 4) and loader workers |
 | `CARDID_SEARCH_MASK` | `1`: export `search.onnx` with the gallery `mask` input (ManaVault only; The Gathering feeds only `embeddings`) |
 
+Every export, gallery-only ones included, also needs the card scans in `data/cards`
+(`scryfall --cards 3000`, shared with detector training) to compute the hub penalty. With fewer
+than 200 it warns and publishes without one (`gallery.hub_penalty: null` in the manifest).
+
 The ManaVault profile also fine-tunes the detector on phone scenes: one large, near-upright card
 on a stand-like background, stronger keystone, foil glare, defocus and the app's dark padding
 bars, with 20% table scenes mixed in.

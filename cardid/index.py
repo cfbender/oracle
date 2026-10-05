@@ -40,6 +40,8 @@ class ArtIndex:
             print(f"embedding {len(self.arts)} gallery arts with {self.checkpoint} ...")
             self.embeddings = embed_images(self.model, gallery_images(self.arts))
             np.save(cache, self.embeddings)
+        # per-art hub penalty (`hubs`); export sets it so the parity check scores like the bundle
+        self.hub = np.zeros(len(self.arts), np.float32)
 
     @torch.no_grad()
     def embed(self, images: np.ndarray) -> np.ndarray:
@@ -50,8 +52,8 @@ class ArtIndex:
 
     def search(self, vecs: np.ndarray, k: int = 5) -> list[dict]:
         """Top-k arts for the per-frame query embeddings (F x D, see `detect.art_crops`), each
-        with its score (similarity minus the frame prior) and the frame it was matched in."""
-        sims = frame_similarities(vecs, self.embeddings, self.frames, self.frame_penalty)
+        with its score (similarity minus the frame prior and hub penalty) and its frame."""
+        sims = frame_similarities(vecs, self.embeddings, self.frames, self.frame_penalty) - self.hub
         idx = np.argpartition(-sims, k)[:k]
         idx = idx[np.argsort(-sims[idx])]
         return [dict(self.arts[i], similarity=float(sims[i]), frame=FRAME_NAMES[self.frames[i]]) for i in idx]

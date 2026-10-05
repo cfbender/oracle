@@ -48,6 +48,9 @@ uv run python -m cardid.train_detector --resume models/detector.pt --epochs 4 --
 uv run python -m cardid.export --checkpoint data/runs/my-change/best.pt --detector models/detector.pt --version my-change
 ```
 
+Export also embeds every frame cut of up to 3000 scans in `data/cards` to compute the hub penalty
+(docs/pipeline.md, "Hub arts"); `--hub-weight 0` skips it.
+
 Fine-tune from `models/` rather than ImageNet. InfoNCE alone beats adding the ArcFace head, which
 memorises the train split. `--real` mixes train-split captures into every epoch (repeated
 `--real-repeat` times, default 20, with light jitter) and picks `best.pt` by held-out real

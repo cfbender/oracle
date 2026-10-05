@@ -5,7 +5,7 @@
 writes data/bundles/<version>/ (version defaults to <UTC timestamp>-<checkpoint run name>, e.g.
 2026-09-23T171512Z-full-3; an existing bundle is never overwritten without --force):
 
-    manifest.json   version, source checkpoints, gallery size, constants, per-file sha256
+    manifest.json   version, source checkpoints, gallery size and penalties, constants, per-file sha256
     detector.onnx   window (256, 256, 4) uint8 RGBA -> quad, up, centre, short  (see graphs.DetectorGraph)
     embed.onnx      scene (H, W, 4) uint8 RGBA + quad (4, 2) -> embeddings (F, 128)
     search.onnx     embeddings (F, 128) [+ mask (N,) with --search-mask] -> indices (k,), scores (k,);
@@ -21,6 +21,11 @@ search.onnx a second required input `mask`, float32 (N,) in arts.json order: art
 > 0 compete, the rest score -3 (`graphs.EXCLUDED_SCORE`), so a client can search a subset such
 as tokens only. The manifest's `search_mask` says whether the graph takes it; a bundle without
 the flag keeps the single-input graph that older clients feed.
+
+Hub arts (`cardid.hubs`) pay an extra per-art penalty, measured against the card scans in
+data/cards (`--hub-weight`, 0 disables it). It is baked into search.onnx with the frame
+penalty, so the graph's inputs and outputs do not change, and recorded as
+`gallery.hub_penalty` (null when not applied: disabled, or fewer than 200 scans).
 
 `cardid.bundle` runs a bundle from Python and is what `--verify` compares against the torch
 pipeline: same clicks on freshly rendered scenes through `Detector.locate_up` +
@@ -44,7 +49,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from . import DATA_DIR
+from . import CARD_DIR, DATA_DIR
 from .constants import CARD_ASPECT, DET_INPUT, REFINE_FILL, REFINE_MIN_SIDE, ROTATIONS, SCENE
 from .degrade import INPUT_SIZE
 from .detect import CARD_H, CARD_W, FRAME_NAMES, FRAME_PENALTY, art_crops, frame_penalties, warp_card
@@ -52,6 +57,7 @@ from .detector import CornerNet, Detector
 from .detector_checkpoint import load_checkpoint
 from .gallery import runtime_metadata
 from .graphs import DetectorGraph, EmbedGraph, SearchGraph
+from .hubs import HUB_WEIGHT, export_hub_penalty
 from .index import ArtIndex
 
 BUNDLE_DIR = DATA_DIR / "bundles"
@@ -102,10 +108,19 @@ def default_version(checkpoint: Path, now: datetime | None = None) -> str:
 
 
 def export_bundle(
-    checkpoint: Path, detector: Path, out: Path, frame_penalty: float, topk: int, gallery_dtype: str, search_mask: bool = False
+    checkpoint: Path,
+    detector: Path,
+    out: Path,
+    frame_penalty: float,
+    topk: int,
+    gallery_dtype: str,
+    search_mask: bool = False,
+    hub_weight: float = HUB_WEIGHT,
+    card_dir: Path = CARD_DIR,
 ) -> tuple[ArtIndex, Detector]:
     out.mkdir(parents=True, exist_ok=True)
     index = ArtIndex(checkpoint, frame_penalty)
+    index.hub, hub = export_hub_penalty(index, card_dir, hub_weight)
     net = CornerNet(pretrained=False)
     load_checkpoint(net, detector, torch.device("cpu"))
     det = Detector(model=net)
@@ -127,7 +142,7 @@ def export_bundle(
         )
 
         dtype = torch.float16 if gallery_dtype == "f16" else torch.float32
-        search = SearchGraph(index.embeddings, index.frames, frame_penalties(index.frames, frame_penalty), topk, dtype)
+        search = SearchGraph(index.embeddings, index.frames, frame_penalties(index.frames, frame_penalty) + index.hub, topk, dtype)
         # no constant folding here: it would materialise the gallery's float32 cast and undo the
         # half-precision storage; onnxruntime folds it once at session load instead
         example = (torch.zeros(len(FRAME_NAMES), index.embeddings.shape[1]),)
@@ -146,7 +161,14 @@ def export_bundle(
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "recogniser": {"checkpoint": str(checkpoint), "sha256": sha256(checkpoint)},
         "detector": {"checkpoint": str(detector), "sha256": sha256(detector)},
-        "gallery": {"arts": len(arts), "dtype": gallery_dtype, "embed_dim": int(index.embeddings.shape[1]), "frame_penalty": frame_penalty, "topk": topk},
+        "gallery": {
+            "arts": len(arts),
+            "dtype": gallery_dtype,
+            "embed_dim": int(index.embeddings.shape[1]),
+            "frame_penalty": frame_penalty,
+            "topk": topk,
+            "hub_penalty": hub,
+        },
         "constants": {
             "scene": SCENE,
             "det_input": DET_INPUT,
@@ -242,6 +264,9 @@ def main() -> None:
         default=os.environ.get("CARDID_SEARCH_MASK", "") == "1",
         help="give search.onnx a required gallery `mask` input (default: CARDID_SEARCH_MASK=1); clients that feed only `embeddings` cannot run it",
     )
+    parser.add_argument(
+        "--hub-weight", type=float, default=HUB_WEIGHT, help=f"hub penalty weight (default {HUB_WEIGHT}; 0 disables); needs scans in data/cards"
+    )
     parser.add_argument("--verify", type=int, default=64, help="rendered scenes to compare against the torch pipeline (0 to skip)")
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
@@ -254,7 +279,7 @@ def main() -> None:
             f"{out} already exists; a published version is immutable, so export with a new --version "
             "(the default now includes the time) or pass --force to overwrite a bundle that was never published"
         )
-    index, det = export_bundle(checkpoint, detector, out, args.frame_penalty, args.topk, args.gallery_dtype, args.search_mask)
+    index, det = export_bundle(checkpoint, detector, out, args.frame_penalty, args.topk, args.gallery_dtype, args.search_mask, args.hub_weight)
     if args.verify and not verify(out, index, det, args.verify, args.seed, args.topk):
         raise SystemExit(1)
 

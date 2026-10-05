@@ -105,7 +105,7 @@ class ManifestContractTest(unittest.TestCase):
             torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, path)
         cls.bundle = cls.root / "bundles" / "contract-v1"
         with patch.object(data, "DATA_DIR", cls.root), patch.object(data, "ART_DIR", art_dir), redirect_stdout(StringIO()):
-            export_bundle(cls.checkpoint, cls.detector, cls.bundle, frame_penalty=0.02, topk=3, gallery_dtype="f16")
+            export_bundle(cls.checkpoint, cls.detector, cls.bundle, frame_penalty=0.02, topk=3, gallery_dtype="f16", card_dir=cls.root / "cards")
         cls.manifest = json.loads((cls.bundle / "manifest.json").read_text())
 
     @classmethod
@@ -200,7 +200,9 @@ class ManifestContractTest(unittest.TestCase):
         self.assertIs(self.manifest["search_mask"], False)  # the default graph older clients feed
         masked = self.root / "bundles" / "contract-mask"
         with patch.object(data, "DATA_DIR", self.root), patch.object(data, "ART_DIR", self.root / "art"), redirect_stdout(StringIO()):
-            export_bundle(self.checkpoint, self.detector, masked, frame_penalty=0.02, topk=3, gallery_dtype="f16", search_mask=True)
+            export_bundle(
+                self.checkpoint, self.detector, masked, frame_penalty=0.02, topk=3, gallery_dtype="f16", search_mask=True, card_dir=self.root / "cards"
+            )
         self.assertIs(json.loads((masked / "manifest.json").read_text())["search_mask"], True)
         self.assertEqual(check_bundle(masked)["version"], "contract-mask")
         plain, bundle = Bundle(self.bundle), Bundle(masked)
@@ -215,6 +217,43 @@ class ManifestContractTest(unittest.TestCase):
         self.assertEqual([r["score"] for r in only[2:]], [-3.0])
         with self.assertRaises(ValueError):
             plain.rank(vectors, np.ones(4, np.float32))
+
+    def test_hub_penalty_is_baked_into_search_and_recorded(self):
+        import onnx
+        from onnx import numpy_helper
+
+        from . import hubs
+        from .detect import frame_penalties
+
+        self.assertIsNone(self.manifest["gallery"]["hub_penalty"])  # no card scans: none applied
+        cards = self.root / "hub-cards"
+        cards.mkdir()
+        rng = np.random.default_rng(1)
+        for i in range(12):
+            cv2.imwrite(str(cards / f"scan-{i}.jpg"), rng.integers(0, 256, (680, 488, 3), dtype=np.uint8))
+        out = self.root / "bundles" / "contract-hub"
+        fixed = np.float32([0, 0.05, 0, 0.1])  # the test embedder maps every image to one vector
+
+        def quick(index, card_dir, weight):
+            _, info = hubs.export_hub_penalty(index, card_dir, weight, k=3, min_cards=5)
+            return fixed, info
+
+        with (
+            patch.object(data, "DATA_DIR", self.root),
+            patch.object(data, "ART_DIR", self.root / "art"),
+            patch("cardid.export.export_hub_penalty", quick),
+            redirect_stdout(StringIO()),
+        ):
+            index, _ = export_bundle(self.checkpoint, self.detector, out, frame_penalty=0.02, topk=3, gallery_dtype="f16", card_dir=cards)
+        record = json.loads((out / "manifest.json").read_text())["gallery"]["hub_penalty"]
+        self.assertEqual((record["weight"], record["neighbours"], record["cards"]), (hubs.HUB_WEIGHT, 3, 12))
+        np.testing.assert_array_equal(index.hub, fixed)  # the torch side of `verify` scores the same
+        graph = onnx.load(str(out / "search.onnx"))
+        baked = next(numpy_helper.to_array(t) for t in graph.graph.initializer if t.name == "penalties")
+        np.testing.assert_allclose(baked, frame_penalties(index.frames, 0.02) + index.hub, atol=1e-7)
+        session = ort.InferenceSession(str(out / "search.onnx"), providers=["CPUExecutionProvider"])
+        self.assertEqual([i.name for i in session.get_inputs()], ["embeddings"])  # contract unchanged
+        self.assertEqual([o.name for o in session.get_outputs()], ["indices", "scores"])
 
     def test_gallery_metadata_matches_gallery_ts(self):
         arts = json.loads((self.bundle / "arts.json").read_text())

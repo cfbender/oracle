@@ -53,10 +53,33 @@ sagas and class cards are smaller hubs. The flat 0.02 penalty does not offset a 
 It used to win only when the true score was low, which describes tokens under the old cuts and
 upside-down detections. Tokens were also read upside down more often (5% of phone scenes,
 against 0.5% for other cards), and then the cuts land on aftermath hubs such as Road.
-A CSLS-style correction was tried offline: subtract a quarter of each art's mean top-10
-similarity to 230 other cards' cuts, above the median. It cut Funeral Room's top-5 rate from 14%
-to 3% and raised top-1 by 0.5–1 point; half removed it entirely. It needs full card scans at
-export and a held-out real-capture check, so it is not implemented.
+**Hub penalty.** Export applies a CSLS-style correction (`cardid.hubs`). Card scans stand in for
+queries: for each gallery art, r is the mean of its 10 highest similarities to other cards'
+cuts for its frame, and its own card never counts. The art pays a quarter of its r above the
+gallery median, clipped to [0, 0.1]. The penalty is added to the frame penalty in `search.onnx`
+and in `ArtIndex` (so `--verify` compares like with like). It only subtracts, so scores stay at
+or below the cosine similarity, and the graph's inputs and outputs do not change.
+
+The scans are `data/cards` (`scryfall --cards 3000`, the detector's scans; at most 3000, a seeded
+sample beyond that), embedded with the checkpoint being exported, so the penalty follows the
+model. Export prints the most penalised arts. The manifest records what was applied as
+`gallery.hub_penalty`: `weight`, `neighbours`, `cap`, `cards`, `cards_fingerprint` (hash of the
+scan names), `median_r`, `penalised` (arts paying > 0) and `max`. With fewer than 200 scans, or
+`--hub-weight 0`, export warns and ships no hub penalty, and `hub_penalty` is `null`.
+
+Measured on the same synthetic phone scenes as the token frames, with the published weights, 1000
+other random cards as the background and the token frames on:
+
+| | before | with hub penalty |
+|---|---|---|
+| Funeral Room in the top 5, all 2,120 queries | 11.6% | 3.1% |
+| token top-1, phone scenes (600) | 0.870 | 0.870 |
+| other cards top-1, phone scenes (780) | 0.913 | 0.917 |
+| room and aftermath cards top-1, phone scenes (210) | 0.833 | 0.848 |
+| correct with score ≥ 0.75: tokens / other cards | 0.790 / 0.827 | 0.785 / 0.822 |
+
+The largest penalties went to Case of the Burning Masks and Funeral Room (0.077) and then sagas
+(0.06–0.07); about half the gallery pays something, mostly a few thousandths.
 
 ## Gallery
 
