@@ -9,6 +9,22 @@ package and entry points are still `cardid` (`python -m cardid.<module>`).
 To improve the models, contribute photos or outlines, or test a bundle in either app, start with
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Everyday commands
+
+On the training box, after the one-time [setup](#training-box-setup) and
+`mise run setup-profiles` (fill in `~/.config/cardid/{manavault,the-gathering}.env`):
+
+```sh
+mise run retrain-all                 # new scans: retrain + publish both apps (add -- --dry-run to preview)
+mise run new-set                     # new set released: refresh gallery + publish both apps, no training
+mise run promote-models              # make The Gathering's published weights the committed models/
+mise run test
+```
+
+`retrain-all` refreshes the gallery once, then for each app pulls its captures, fine-tunes from
+its own published checkpoints, and publishes unless its held-out top-1 regresses. A failing
+app doesn't stop the other. Everything below is detail.
+
 ## Apps and where their bundles go
 
 | App | Uses it for | Publish with | Picked up |
@@ -296,6 +312,9 @@ uv run python -m cardid.export --checkpoint models/recogniser.pt --detector mode
 checkpoints are committed: the gallery (`scryfall`), real captures and bundles stay in the
 ignored `data/`. Replace these files only with a published pair, update `SHA256SUMS` and the
 table in the same commit, and keep them small (each version stays in Git history).
+`mise run promote-models` (or `-- --profile manavault`) copies the pair an app last published
+(`data/nightly/<profile>/state.json`) into `models/`, rewrites `SHA256SUMS` and prints a commit
+message naming the bundle.
 
 ### Code layout
 

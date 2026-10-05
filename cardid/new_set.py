@@ -1,10 +1,14 @@
-"""New set released: refresh the gallery once, then re-export and publish every app's model with it.
+"""Run `cardid.retrain` for every app profile, after one shared gallery refresh.
 
-    mise run new-set                              # every profile in ~/.config/cardid/*.env
+    mise run retrain-all                          # new scans: pull, fine-tune, gate, publish each app
+    mise run new-set                              # new set: re-export the published models, no training
     mise run new-set -- --profile manavault       # only some (repeatable)
     mise run new-set -- --dry-run                 # any other flag goes to each retrain run
 
-New cards need gallery embeddings, not training. For each app profile this runs
+With --train (`mise run retrain-all`) each app runs a full retrain: pull its own captures,
+fine-tune from its own published checkpoints, pass its held-out gate, publish.
+
+Without it (new sets): new cards need gallery embeddings, not training. For each app profile this runs
 `cardid.retrain --gallery-only` with that app's env file: its own published checkpoints (exact
 SHA256 match), its own held-out gate and its own publish target. The gallery is refreshed once,
 first, so no app can publish a bundle without the new cards. A failing app does not stop the
@@ -39,9 +43,10 @@ def profile_files(config_dir: Path, names: list[str]) -> list[Path]:
     return files
 
 
-def commands(files: list[Path], passthrough: list[str]) -> list[list[str]]:
-    """One gallery-only retrain per profile, all on the gallery refreshed beforehand."""
-    return [[sys.executable, "-m", "cardid.retrain", "--env-file", str(path), "--gallery-only", "--no-update-gallery", *passthrough] for path in files]
+def commands(files: list[Path], passthrough: list[str], train: bool = False) -> list[list[str]]:
+    """One retrain per profile (gallery-only unless training), all on the gallery refreshed beforehand."""
+    mode = [] if train else ["--gallery-only"]
+    return [[sys.executable, "-m", "cardid.retrain", "--env-file", str(path), *mode, "--no-update-gallery", *passthrough] for path in files]
 
 
 def update_gallery(runner) -> None:
@@ -59,13 +64,13 @@ def update_gallery(runner) -> None:
             raise SystemExit("gallery update failed; nothing was exported or published")
 
 
-def run_all(files: list[Path], passthrough: list[str], runner=subprocess.run) -> dict[str, bool]:
+def run_all(files: list[Path], passthrough: list[str], runner=subprocess.run, train: bool = False) -> dict[str, bool]:
     # A dry run only plans; --no-update-gallery reuses a gallery refreshed by hand.
     if not {"--dry-run", "--no-update-gallery"} & set(passthrough):
         update_gallery(runner)
     passthrough = [arg for arg in passthrough if arg != "--no-update-gallery"]
     results = {}
-    for path, cmd in zip(files, commands(files, passthrough), strict=True):
+    for path, cmd in zip(files, commands(files, passthrough, train), strict=True):
         print(f"== {path.stem}: {shlex.join(cmd[1:])}", flush=True)
         results[path.stem] = runner(cmd, cwd=ML_DIR).returncode == 0
     return results
@@ -75,8 +80,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", action="append", default=[], help="profile name under the config dir (repeatable; default: all)")
     parser.add_argument("--config-dir", type=Path, default=CONFIG_DIR)
+    parser.add_argument("--train", action="store_true", help="full retrain on each app's new captures instead of a gallery-only re-export")
     args, passthrough = parser.parse_known_args()
-    results = run_all(profile_files(args.config_dir, args.profile), passthrough)
+    results = run_all(profile_files(args.config_dir, args.profile), passthrough, train=args.train)
     print("\n".join(f"{name}: {'ok' if ok else 'FAILED (see its report above)'}" for name, ok in results.items()), flush=True)
     if not all(results.values()):
         raise SystemExit(1)

@@ -43,6 +43,14 @@ run = "uv run --no-sync python -m cardid.retrain --env-file ~/.config/cardid/man
 description = "Pull table corrections, fine-tune, evaluate and publish The Gathering's model."
 run = "uv run --no-sync python -m cardid.retrain --env-file ~/.config/cardid/the-gathering.env"
 
+[tasks.retrain-all]
+description = "New scans: refresh the gallery once, then pull, fine-tune, gate and publish every app's model."
+run = "uv run --no-sync python -m cardid.new_set --train"
+
+[tasks.promote-models]
+description = "Copy an app's published checkpoints into models/ (default the-gathering; --profile manavault)."
+run = "uv run --no-sync python -m cardid.promote"
+
 [tasks.new-set]
 description = "New set released: refresh the gallery once, then re-export and publish every app's model with it."
 run = "uv run --no-sync python -m cardid.new_set"

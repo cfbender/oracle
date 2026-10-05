@@ -42,6 +42,13 @@ class NewSetTest(unittest.TestCase):
         for call, path in zip(self.calls[1:], files, strict=True):
             self.assertEqual(call, ["-m", "cardid.retrain", "--env-file", str(path), "--gallery-only", "--no-update-gallery", "--force"])
 
+    def test_train_runs_a_full_retrain_per_profile(self):
+        files = new_set.profile_files(self.config, [])
+        new_set.run_all(files, [], runner=self.runner, train=True)
+        self.assertEqual(self.calls[0], ["-m", "cardid.scryfall", "--update"])
+        for call, path in zip(self.calls[1:], files, strict=True):
+            self.assertEqual(call, ["-m", "cardid.retrain", "--env-file", str(path), "--no-update-gallery"])
+
     def test_a_failed_gallery_update_publishes_nothing(self):
         self.failing = {"scryfall"}
         with self.assertRaisesRegex(SystemExit, "gallery update failed"):
