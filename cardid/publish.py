@@ -1,6 +1,6 @@
 """Ship a bundle (`cardid.export`) to where an app serves it to browsers.
 
-    uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to nuc:/srv/the-gathering/cardid
+    uv run python -m cardid.publish data/bundles/<version> --to user@host:/srv/the-gathering/cardid
     uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to /mnt/gathering/cardid   # local path
     uv run python -m cardid.publish data/bundles/2026-09-22-full-3 --to github:cfbender/manavault
 

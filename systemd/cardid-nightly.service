@@ -1,7 +1,7 @@
 [Unit]
 Description=Pull corrections and conditionally publish a better card recognizer
 # Every path below assumes the checkout lives at ~/oracle; ideally in the home of a
-# dedicated unprivileged account (see README.md, "Optional nightly loop"). Adjust the paths
+# dedicated unprivileged account (see docs/operations.md, "Optional nightly loop"). Adjust the paths
 # (or symlink ~/oracle) if the checkout lives elsewhere.
 
 [Service]
