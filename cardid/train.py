@@ -7,6 +7,9 @@
 each epoch (oversampled `--real-repeat` times, lightly augmented), and the best checkpoint is
 then chosen by top-1 on usable held-out real captures, or synthetic queries if none exist.
 
+Token arts (`token`, `double_faced_token` layouts) are ~3% of the gallery; `--token-repeat`
+(default 3) gives each of them that many pairs per epoch so they are ~9% of the synthetic pairs.
+
 Checkpoints to data/runs/<run>/{last,best}.pt; "best" is by eval top-1 on a fixed query set
 drawn from the eval split (unseen arts), which is also what evaluate.py reports.
 """
@@ -23,12 +26,19 @@ from torch.utils.data import ConcatDataset
 from tqdm import tqdm
 
 from . import RUNS_DIR
-from .data import PairDataset, art_frames, cached_eval_queries, gallery_images, load_arts, split
+from .data import TOKEN_LAYOUTS, TOKEN_REPEAT, PairDataset, art_frames, cached_eval_queries, gallery_images, load_arts, split
 from .evaluate import cosine_topk, embed_images, frame_topk
 from .gallery import printing_index
 from .model import ArcFaceHead, Embedder, info_nce
 from .real import RealDataset, load_labels, real_eval_queries
 from .training_runtime import add_runtime_args, make_loader, setup, write_run_metadata
+
+
+def positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
 
 
 def quick_eval(model: Embedder, gallery: np.ndarray, queries: np.ndarray, targets: np.ndarray, frames: np.ndarray | None = None) -> float:
@@ -58,6 +68,12 @@ def main() -> None:
     parser.add_argument("--resume")
     parser.add_argument("--real", action="store_true", help="mix in labeled real captures from data/real")
     parser.add_argument("--real-repeat", type=int, default=20, help="how many times each real capture appears per epoch")
+    parser.add_argument(
+        "--token-repeat",
+        type=positive,
+        default=TOKEN_REPEAT,
+        help=f"pairs per epoch for each token art (default {TOKEN_REPEAT}; 1 samples tokens like any art)",
+    )
     args = parser.parse_args()
     if args.real and args.arcface > 0:
         parser.error("--real cannot be combined with --arcface (real labels may fall outside the train split)")
@@ -69,7 +85,9 @@ def main() -> None:
     write_run_metadata(run_dir, args, runtime)
     arts = load_arts()
     train_arts = split(arts, "train")
-    dataset = PairDataset(train_arts, seed=args.seed)
+    dataset = PairDataset(train_arts, seed=args.seed, token_repeat=args.token_repeat)
+    tokens = int(sum(a.get("layout") in TOKEN_LAYOUTS for a in train_arts))
+    print(f"synthetic pairs: {len(dataset)} per epoch ({tokens} token arts x{args.token_repeat})")
     train_set = dataset
     real_sets = []
     if args.real:

@@ -12,7 +12,9 @@ Per click, mirroring `Detector.locate_up` + `capture.Session.identify`:
    (`constants`: 88/63, 0.6, 64) around that centre, so the card's long side spans 60% of the
    input; its quad is the answer, its up vote is |up| / ROTATIONS.
 3. embed.onnx on the image and the quad -> one embedding per frame cut.
-4. search.onnx -> top-k gallery indices and scores; `arts.json` names them.
+4. search.onnx -> top-k gallery indices and scores; `arts.json` names them. A bundle whose
+   manifest has `search_mask: true` also takes `mask`, float32 (N,) in arts.json order: values
+   > 0 keep an art, 0 excludes it (score -3). Feed ones to search the whole gallery.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ class Bundle:
         self.detector = ort.InferenceSession(str(self.path / "detector.onnx"), opts, providers=providers)
         self.embed = ort.InferenceSession(str(self.path / "embed.onnx"), opts, providers=providers)
         self.search = ort.InferenceSession(str(self.path / "search.onnx"), opts, providers=providers)
+        self.takes_mask = "mask" in [i.name for i in self.search.get_inputs()]
         self.timings: dict[str, float] = {}
 
     def _run(self, name: str, session, feeds: dict) -> list[np.ndarray]:
@@ -81,8 +84,14 @@ class Bundle:
         """(F, D) embeddings of the frame cuts of the card at `quad` (image px, printed order)."""
         return self._run("embed", self.embed, {"scene": rgba(img), "quad": np.ascontiguousarray(quad, np.float32)})[0]
 
-    def rank(self, embeddings: np.ndarray) -> list[dict]:
-        indices, scores = self._run("search", self.search, {"embeddings": np.ascontiguousarray(embeddings, np.float32)})
+    def rank(self, embeddings: np.ndarray, mask: np.ndarray | None = None) -> list[dict]:
+        """Top-k arts; `mask` (one value per art, > 0 keeps) needs a graph exported with it."""
+        feeds = {"embeddings": np.ascontiguousarray(embeddings, np.float32)}
+        if self.takes_mask:
+            feeds["mask"] = np.ones(len(self.arts), np.float32) if mask is None else np.ascontiguousarray(mask, np.float32)
+        elif mask is not None:
+            raise ValueError(f"{self.path.name}/search.onnx was exported without a mask input")
+        indices, scores = self._run("search", self.search, feeds)
         return [dict(self.arts[int(i)], index=int(i), score=float(s)) for i, s in zip(indices, scores, strict=True)]
 
     def identify(self, img: np.ndarray, click: tuple[float, float]) -> dict:

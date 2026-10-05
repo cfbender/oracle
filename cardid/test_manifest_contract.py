@@ -194,6 +194,28 @@ class ManifestContractTest(unittest.TestCase):
         self.assertEqual((indices.shape, scores.shape), ((3,), (3,)))
         self.assertTrue(set(indices.tolist()) <= set(range(4)))
 
+    def test_search_mask_is_opt_in_and_recorded_in_the_manifest(self):
+        from .bundle import Bundle
+
+        self.assertIs(self.manifest["search_mask"], False)  # the default graph older clients feed
+        masked = self.root / "bundles" / "contract-mask"
+        with patch.object(data, "DATA_DIR", self.root), patch.object(data, "ART_DIR", self.root / "art"), redirect_stdout(StringIO()):
+            export_bundle(self.checkpoint, self.detector, masked, frame_penalty=0.02, topk=3, gallery_dtype="f16", search_mask=True)
+        self.assertIs(json.loads((masked / "manifest.json").read_text())["search_mask"], True)
+        self.assertEqual(check_bundle(masked)["version"], "contract-mask")
+        plain, bundle = Bundle(self.bundle), Bundle(masked)
+        self.assertEqual([i.name for i in bundle.search.get_inputs()], ["embeddings", "mask"])
+        self.assertEqual((bundle.search.get_inputs()[1].type, bundle.search.get_inputs()[1].shape), ("tensor(float)", [4]))
+        vectors = plain.embed_card(np.full((300, 400, 3), 90, np.uint8), np.float32([[100, 50], [200, 50], [200, 190], [100, 190]]))
+        everything = plain.rank(vectors)
+        self.assertEqual(bundle.rank(vectors), everything)  # all ones by default
+        self.assertEqual(bundle.rank(vectors, np.ones(4, np.float32)), everything)
+        only = bundle.rank(vectors, np.float32([0, 1, 0, 1]))
+        self.assertEqual({r["index"] for r in only[:2]}, {1, 3})
+        self.assertEqual([r["score"] for r in only[2:]], [-3.0])
+        with self.assertRaises(ValueError):
+            plain.rank(vectors, np.ones(4, np.float32))
+
     def test_gallery_metadata_matches_gallery_ts(self):
         arts = json.loads((self.bundle / "arts.json").read_text())
         printings = json.loads((self.bundle / "printings.json").read_text())

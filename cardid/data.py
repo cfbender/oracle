@@ -16,7 +16,7 @@ from tqdm import tqdm
 from . import ART_DIR, DATA_DIR
 from .catalog import embeds
 from .degrade import PROFILES, Degradation, clean_view, degraded_view, load_rgb
-from .detect import FRAME_NAMES, frame_of
+from .detect import FRAME_NAMES, TOKEN_LAYOUTS, frame_of
 from .gallery import gallery_fingerprint
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
@@ -77,29 +77,46 @@ def worker_init(_worker_id: int) -> None:
     np.random.seed(seed)
 
 
-class PairDataset(Dataset):
-    """One (clean, degraded) pair per art, with a fresh random degradation every access."""
+# Tokens are ~3% of the gallery, so with one pair per art they were ~3% of the training pairs.
+# Three copies per epoch make them ~9% for ~6% more steps (see docs/training.md).
+TOKEN_REPEAT = 3
 
-    def __init__(self, arts: list[dict], cfg: Degradation = PROFILES["harsh"], seed: int = 0):
+
+def pair_order(arts: list[dict], token_repeat: int = TOKEN_REPEAT) -> np.ndarray:
+    """Art index per dataset position: every art once, token layouts `token_repeat` times."""
+    if token_repeat < 1:
+        raise ValueError("token_repeat must be at least 1")
+    counts = [token_repeat if a.get("layout") in TOKEN_LAYOUTS else 1 for a in arts]
+    return np.repeat(np.arange(len(arts)), counts)
+
+
+class PairDataset(Dataset):
+    """One (clean, degraded) pair per art (`token_repeat` pairs per token), with a fresh random
+    degradation every access. Items carry the art index, so repeats share an ArcFace label."""
+
+    def __init__(self, arts: list[dict], cfg: Degradation = PROFILES["harsh"], seed: int = 0, token_repeat: int = TOKEN_REPEAT):
         self.arts = arts
         self.cfg = cfg
         self.seed = seed
         self.epoch = 0
+        self.order = pair_order(arts, token_repeat)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
     def __len__(self) -> int:
-        return len(self.arts)
+        return len(self.order)
 
     def __getitem__(self, i: int):
+        # keyed on the position, so each copy of a repeated art gets its own degradation
         rng = np.random.default_rng([self.seed, self.epoch, i])
-        img = load_rgb(art_path(self.arts[i]))
+        art = int(self.order[i])
+        img = load_rgb(art_path(self.arts[art]))
         # The gallery is built from clean views, so the anchor stays clean apart from a tiny
         # crop jitter that stops the model from keying on exact border pixels.
         clean = clean_view(img)
         degraded, _ = degraded_view(img, rng, self.cfg)
-        return to_tensor(clean), to_tensor(degraded), i
+        return to_tensor(clean), to_tensor(degraded), art
 
 
 def gallery_images(arts: list[dict]) -> np.ndarray:

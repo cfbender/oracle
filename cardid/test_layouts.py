@@ -16,9 +16,9 @@ import torch
 from . import scryfall
 from .bundle import rgba
 from .data import to_tensor
-from .detect import CARD_H, CARD_W, FRAME_NAMES, art_crops, frame_crop, frame_of
+from .detect import CARD_H, CARD_W, FRAME_NAMES, RARE_FRAMES, art_crops, frame_box, frame_crop, frame_of
 from .export import export_graph
-from .graphs import EmbedGraph, SearchGraph
+from .graphs import EXCLUDED_SCORE, EmbedGraph, SearchGraph
 from .real import art_from_card
 from .scene_renderer import draw_card
 from .test_scryfall import ABRADE
@@ -146,7 +146,7 @@ class LayoutTest(unittest.TestCase):
             )
             actual = ort.InferenceSession(str(path)).run(None, {"scene": scene, "quad": quad})[0]
         expected = to_tensor(art_crops(gradient())).numpy()
-        self.assertEqual(actual.shape, (14, 3, 128, 128))
+        self.assertEqual(actual.shape, (len(FRAME_NAMES), 3, 128, 128))
         np.testing.assert_allclose(actual, expected, atol=0.018)
 
     def test_search_scores_only_the_gallery_rows_own_frame(self):
@@ -160,3 +160,62 @@ class LayoutTest(unittest.TestCase):
         ids, scores = graph(torch.from_numpy(queries))
         self.assertEqual(ids.tolist(), [1, 0, 2])
         np.testing.assert_allclose(scores.numpy(), [0.78, 0.28, 0.1], atol=1e-6)
+
+    def test_current_token_templates_get_the_wide_token_frames(self):
+        # Scryfall's token art_crop sizes: 684x570 and 684x722 now, older 630x550, 613x498,
+        # 620x664 and 627x685; modern-frame DFC tokens are 626x457 like any modern card.
+        for (w, h), frame in [
+            ((684, 570), "token"),
+            ((630, 550), "token"),
+            ((613, 498), "token"),
+            ((684, 722), "token_tall"),
+            ((620, 664), "tall"),
+            ((627, 685), "tall"),
+            ((626, 457), "modern"),
+        ]:
+            for layout in ("token", "double_faced_token"):
+                with self.subTest(size=(w, h), layout=layout):
+                    self.assertEqual(frame_of(w / h, layout), frame)
+        self.assertEqual(frame_of(684 / 570, "normal"), "old")
+        self.assertEqual(frame_of(684 / 722, "normal"), "tall")
+        # appended, so the indices of the frames older bundles know do not move
+        self.assertEqual(FRAME_NAMES[-2:], ["token", "token_tall"])
+        np.testing.assert_allclose(frame_box("token"), (0.041, 0.115, 0.959, 0.115 + 0.918 * CARD_W / 1.2 / CARD_H))
+        np.testing.assert_allclose(frame_box("token_tall"), (0.041, 0.115, 0.959, 0.115 + 0.918 * CARD_W / 0.947 / CARD_H))
+        self.assertNotIn("token", RARE_FRAMES)  # filed as `old` before, which had no penalty
+        self.assertIn("token_tall", RARE_FRAMES)  # filed as `tall` before
+
+    def test_search_mask_restricts_the_gallery_and_all_ones_changes_nothing(self):
+        rng = np.random.default_rng(3)
+        gallery = rng.normal(size=(40, 8)).astype(np.float32)
+        gallery /= np.linalg.norm(gallery, axis=1, keepdims=True)
+        frames = rng.integers(0, len(FRAME_NAMES), 40)
+        penalties = np.where(frames % 3 == 0, 0.02, 0.0).astype(np.float32)
+        queries = rng.normal(size=(len(FRAME_NAMES), 8)).astype(np.float32)
+        graph = SearchGraph(gallery, frames, penalties, 5, torch.float16)
+        with tempfile.TemporaryDirectory() as temp:
+            plain, masked = Path(temp) / "plain.onnx", Path(temp) / "masked.onnx"
+            export_graph(graph, (torch.from_numpy(queries),), plain, ["embeddings"], ["indices", "scores"], fold=False)
+            export_graph(graph, (torch.from_numpy(queries), torch.ones(40)), masked, ["embeddings", "mask"], ["indices", "scores"], fold=False)
+            plain, masked = ort.InferenceSession(str(plain)), ort.InferenceSession(str(masked))
+        self.assertEqual([i.name for i in masked.get_inputs()], ["embeddings", "mask"])
+        self.assertEqual((masked.get_inputs()[1].type, masked.get_inputs()[1].shape), ("tensor(float)", [40]))
+        self.assertEqual([o.name for o in masked.get_outputs()], ["indices", "scores"])
+        ids, scores = plain.run(None, {"embeddings": queries})
+        all_ids, all_scores = masked.run(None, {"embeddings": queries, "mask": np.ones(40, np.float32)})
+        np.testing.assert_array_equal(all_ids, ids)
+        np.testing.assert_array_equal(all_scores, scores)
+
+        keep = np.zeros(40, np.float32)
+        keep[[3, 11, 17, 25, 26, 39]] = 1
+        sub_ids, sub_scores = masked.run(None, {"embeddings": queries, "mask": keep})
+        full = (gallery.astype(np.float16).astype(np.float32) @ queries.T)[np.arange(40), frames] - penalties
+        expected = sorted(np.flatnonzero(keep), key=lambda i: -full[i])[:5]
+        self.assertEqual(sub_ids.tolist(), expected)
+        np.testing.assert_allclose(sub_scores, full[expected], atol=1e-5)
+
+        few = np.zeros(40, np.float32)
+        few[[7, 30]] = 1  # fewer kept arts than k: the rest of the top-k are excluded arts
+        few_ids, few_scores = masked.run(None, {"embeddings": queries, "mask": few})
+        self.assertEqual(set(few_ids[:2].tolist()), {7, 30})
+        np.testing.assert_array_equal(few_scores[2:], [EXCLUDED_SCORE] * 3)

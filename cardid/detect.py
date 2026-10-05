@@ -48,9 +48,16 @@ TWO_PART_BOXES = {
     "flip_1": (0.510, 0.315, 0.915, 0.655),
 }
 FRAMES.update({name: box[:3] for name, box in TWO_PART_BOXES.items()})
+# Scryfall's current token art_crop (684x570 or 684x722 px) is wider than any card art box: it
+# spans 4.1-95.9% of the card from 11.5% down. Its 1.20 aspect used to file it as `old` and its
+# 0.947 as `tall`, whose cuts cover only ~65% / ~83% of that crop, so a token's true score sat
+# low enough for hub arts (Funeral Room's room_0 half) to overtake it. Older token templates
+# (1.15, 1.23) are also closer to `token` than to `old`; 0.92-0.93 ones match `tall`.
+FRAMES.update({"token": (0.041, 0.115, 0.959), "token_tall": (0.041, 0.115, 0.959)})
+TOKEN_LAYOUTS = frozenset({"token", "double_faced_token"})
 FRAME_NAMES = list(FRAMES)
 # representative art aspect (width / height) per frame, for the query-side cut
-FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415}
+FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415, "token": 1.2, "token_tall": 0.947}
 # Counter-clockwise quarter turns from printed scan to upright gallery art.
 FRAME_ROTATIONS = {"room_0": 3, "room_1": 3, "split_0": 3, "split_1": 3, "aftermath_1": 1, "flip_1": 2}
 for _name, (_x0, _y0, _x1, _y1) in TWO_PART_BOXES.items():
@@ -61,7 +68,7 @@ HALF_LEFT_LAYOUTS = {"class", "case"}
 # an ordinary card are extra lottery tickets: a full-art Plains or a saga beat the truth by 0.01 in
 # real evals while, on clean scans, no rare-frame impostor comes close. Rare-frame candidates must
 # therefore beat the standard-frame ones by this margin (subtracted from their similarity).
-RARE_FRAMES = frozenset({"tall", "right", "left", *TWO_PART_BOXES})
+RARE_FRAMES = frozenset({"tall", "token_tall", "right", "left", *TWO_PART_BOXES})
 FRAME_PENALTY = 0.02
 
 
@@ -77,15 +84,18 @@ def frame_of(aspect: float, layout: str | None = None, face: int = 0, layout_gro
     half-width frames, the Scryfall layout (sagas put the art on the right, class and case
     cards on the left; without a layout assume saga, they outnumber the others 5:1).
     DFC sides are classified independently: ordinary transform/MDFC backs (~1.37) are
-    modern, not half-width; showcase/extended/token faces still use their own aspect."""
+    modern, not half-width; showcase/extended/token faces still use their own aspect. Tokens
+    whose aspect is one of the wide token templates' get the `token`/`token_tall` frames."""
     if layout in {"split", "flip"}:
         return f"{layout_group or layout}_{face}"
     if aspect < 0.6:
         return "left" if layout in HALF_LEFT_LAYOUTS else "right"
+    if layout in TOKEN_LAYOUTS and 0.94 <= aspect < 0.96:
+        return "token_tall"
     if aspect < 1.1:
         return "tall"
     if aspect < 1.3:
-        return "old"
+        return "token" if layout in TOKEN_LAYOUTS else "old"
     if aspect < 1.44:
         return "modern"
     return "extended"

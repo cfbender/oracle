@@ -66,6 +66,46 @@ class QueryCacheTest(unittest.TestCase):
             self.assertEqual(result[2], [{"width": 90}])
 
 
+TOKEN_ARTS = [
+    {"id": "a", "layout": "normal"},
+    {"id": "t", "layout": "token"},
+    {"id": "b"},  # older arts.json rows may have no layout
+    {"id": "d", "layout": "double_faced_token"},
+    {"id": "s", "layout": "split"},
+]
+
+
+class TokenOversamplingTest(unittest.TestCase):
+    def test_pair_order_repeats_only_token_layouts(self):
+        self.assertEqual(data.pair_order(TOKEN_ARTS, 1).tolist(), [0, 1, 2, 3, 4])
+        self.assertEqual(data.pair_order(TOKEN_ARTS, 3).tolist(), [0, 1, 1, 1, 2, 3, 3, 3, 4])
+        self.assertEqual(data.TOKEN_REPEAT, 3)
+        self.assertEqual(len(data.PairDataset(TOKEN_ARTS)), 9)  # the default oversamples
+        with self.assertRaises(ValueError):
+            data.pair_order(TOKEN_ARTS, 0)
+
+    def test_repeats_carry_the_art_index_and_their_own_degradation(self):
+        images = {a["id"]: np.full((60, 80, 3), 40 * i, np.uint8) for i, a in enumerate(TOKEN_ARTS)}
+        seen = []
+
+        def degraded_view(img, rng, cfg):
+            seen.append(float(rng.random()))
+            return img[:16, :16], {}
+
+        with (
+            patch.object(data, "load_rgb", side_effect=lambda path: images[path.stem]),
+            patch.object(data, "clean_view", side_effect=lambda img: img[:16, :16]),
+            patch.object(data, "degraded_view", side_effect=degraded_view),
+        ):
+            dataset = data.PairDataset(TOKEN_ARTS, token_repeat=2)
+            items = [dataset[i] for i in range(len(dataset))]
+        self.assertEqual([label for _, _, label in items], [0, 1, 1, 2, 3, 3, 4])
+        # each copy is the token's own image, augmented with a different draw
+        for clean, _, label in items:
+            np.testing.assert_array_equal(clean.numpy(), data.to_tensor(images[TOKEN_ARTS[label]["id"]][:16, :16]).numpy())
+        self.assertEqual(len(set(seen)), len(seen))
+
+
 class CheckpointLoadTest(unittest.TestCase):
     def test_detector_checkpoints_load_weights_only_and_refuse_pickled_code(self):
         import torch

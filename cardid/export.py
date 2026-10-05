@@ -8,13 +8,20 @@ writes data/bundles/<version>/ (version defaults to <UTC timestamp>-<checkpoint 
     manifest.json   version, source checkpoints, gallery size, constants, per-file sha256
     detector.onnx   window (256, 256, 4) uint8 RGBA -> quad, up, centre, short  (see graphs.DetectorGraph)
     embed.onnx      scene (H, W, 4) uint8 RGBA + quad (4, 2) -> embeddings (F, 128)
-    search.onnx     embeddings (F, 128) -> indices (k,), scores (k,); gallery baked in
+    search.onnx     embeddings (F, 128) [+ mask (N,) with --search-mask] -> indices (k,), scores (k,);
+                    gallery baked in
     arts.json       gallery entries in index order: id, name, set, collector_number, layout, frame
     SHA256SUMS      the same sums for `sha256sum -c` (cardid.publish checks them on the host)
 
 The graphs are loadable by onnxruntime-web's wasm backend (embed.onnx needs GridSample, which
 it always has) and by onnxruntime on a server. Its native WebGPU EP also runs them, but Round
 and Mod fall back to the CPU; see docs/webcam-table.md for why the browser stays on wasm.
+`--search-mask` (default from CARDID_SEARCH_MASK=1, set in the ManaVault profile) gives
+search.onnx a second required input `mask`, float32 (N,) in arts.json order: arts with a value
+> 0 compete, the rest score -3 (`graphs.EXCLUDED_SCORE`), so a client can search a subset such
+as tokens only. The manifest's `search_mask` says whether the graph takes it; a bundle without
+the flag keeps the single-input graph that older clients feed.
+
 `cardid.bundle` runs a bundle from Python and is what `--verify` compares against the torch
 pipeline: same clicks on freshly rendered scenes through `Detector.locate_up` +
 `warp_card`/`art_crops` + `ArtIndex` and through the bundle, reporting corner agreement and
@@ -29,6 +36,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,7 +101,9 @@ def default_version(checkpoint: Path, now: datetime | None = None) -> str:
     return f"{now or datetime.now(UTC):%Y-%m-%dT%H%M%SZ}-{checkpoint.parent.name}"
 
 
-def export_bundle(checkpoint: Path, detector: Path, out: Path, frame_penalty: float, topk: int, gallery_dtype: str) -> tuple[ArtIndex, Detector]:
+def export_bundle(
+    checkpoint: Path, detector: Path, out: Path, frame_penalty: float, topk: int, gallery_dtype: str, search_mask: bool = False
+) -> tuple[ArtIndex, Detector]:
     out.mkdir(parents=True, exist_ok=True)
     index = ArtIndex(checkpoint, frame_penalty)
     net = CornerNet(pretrained=False)
@@ -121,7 +131,11 @@ def export_bundle(checkpoint: Path, detector: Path, out: Path, frame_penalty: fl
         # no constant folding here: it would materialise the gallery's float32 cast and undo the
         # half-precision storage; onnxruntime folds it once at session load instead
         example = (torch.zeros(len(FRAME_NAMES), index.embeddings.shape[1]),)
-        export_graph(search, example, out / "search.onnx", ["embeddings"], ["indices", "scores"], fold=False)
+        inputs = ["embeddings"]
+        if search_mask:
+            example += (torch.ones(len(index.embeddings)),)
+            inputs.append("mask")
+        export_graph(search, example, out / "search.onnx", inputs, ["indices", "scores"], fold=False)
 
     arts, printings = runtime_metadata(index.arts, [FRAME_NAMES[f] for f in index.frames])
     (out / "arts.json").write_text(json.dumps(arts, separators=(",", ":")))
@@ -144,6 +158,7 @@ def export_bundle(checkpoint: Path, detector: Path, out: Path, frame_penalty: fl
             "input_size": INPUT_SIZE,
             "frame_names": FRAME_NAMES,
         },
+        "search_mask": search_mask,  # search.onnx takes `mask` (float32, one per art) after `embeddings`
         "opset": OPSET,
         "files": files,
     }
@@ -221,6 +236,12 @@ def main() -> None:
     parser.add_argument("--frame-penalty", type=float, default=FRAME_PENALTY)
     parser.add_argument("--topk", type=int, default=5)
     parser.add_argument("--gallery-dtype", choices=["f16", "f32"], default="f16", help="storage of the gallery embeddings inside search.onnx")
+    parser.add_argument(
+        "--search-mask",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("CARDID_SEARCH_MASK", "") == "1",
+        help="give search.onnx a required gallery `mask` input (default: CARDID_SEARCH_MASK=1); clients that feed only `embeddings` cannot run it",
+    )
     parser.add_argument("--verify", type=int, default=64, help="rendered scenes to compare against the torch pipeline (0 to skip)")
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
@@ -233,7 +254,7 @@ def main() -> None:
             f"{out} already exists; a published version is immutable, so export with a new --version "
             "(the default now includes the time) or pass --force to overwrite a bundle that was never published"
         )
-    index, det = export_bundle(checkpoint, detector, out, args.frame_penalty, args.topk, args.gallery_dtype)
+    index, det = export_bundle(checkpoint, detector, out, args.frame_penalty, args.topk, args.gallery_dtype, args.search_mask)
     if args.verify and not verify(out, index, det, args.verify, args.seed, args.topk):
         raise SystemExit(1)
 

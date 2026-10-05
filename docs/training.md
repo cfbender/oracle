@@ -51,7 +51,9 @@ uv run python -m cardid.export --checkpoint data/runs/my-change/best.pt --detect
 Fine-tune from `models/` rather than ImageNet. InfoNCE alone beats adding the ArcFace head, which
 memorises the train split. `--real` mixes train-split captures into every epoch (repeated
 `--real-repeat` times, default 20, with light jitter) and picks `best.pt` by held-out real
-top-1. Both trainers take `--seed` and write `data/runs/<run>/run.json` with arguments, device and
+top-1. Token arts (`token`, `double_faced_token`) are ~3% of the gallery, so each gets
+`--token-repeat` pairs per epoch (default 3, ~9% of the synthetic pairs, ~6% more steps; 1 turns
+it off). Copies keep their art index and get their own degradation. Both trainers take `--seed` and write `data/runs/<run>/run.json` with arguments, device and
 library versions. Each run writes `last.pt`, and `best.pt` when an epoch beats the start.
 
 The detector trainer reports median corner error as a fraction of the short side and the share

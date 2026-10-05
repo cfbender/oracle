@@ -70,5 +70,6 @@ a fresh clone can fine-tune, evaluate or export without training from scratch.
   new sets, publishing, the optional nightly loop.
 - [docs/training.md](docs/training.md): manual training, evaluation, real captures, the detector,
   GPU setup, code layout.
-- [docs/pipeline.md](docs/pipeline.md): how recognition works, the gallery, frame and layout
-  geometry, the bundle format.
+- [docs/pipeline.md](docs/pipeline.md): how recognition works, the gallery, frame, token and
+  layout geometry, hub arts, the bundle format and manifest, and ManaVault's optional search
+  mask (`search.onnx` input `mask`, manifest `search_mask`).

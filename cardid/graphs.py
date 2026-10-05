@@ -8,6 +8,7 @@ Three graphs, all with the image handed over as the browser has it (uint8 RGBA, 
                                                     up (2,), centre (2,), short ()
     EmbedGraph     scene (H, W, 4), quad (4, 2)  -> embeddings (F, 128), one per frame cut
     SearchGraph    embeddings (F, 128)           -> indices (k,), scores (k,)
+                   [, mask (N,)]
 
 `DetectorGraph` is `Detector.predict_window` plus `cyclic_order`/`orient_quad` for one window:
 the four 90-degree rotations, CornerNet, the heatmap corner snap (`snap_corners`, written
@@ -193,9 +194,16 @@ class EmbedGraph(nn.Module):
         return self.embedder((x - mean) / std)
 
 
+EXCLUDED_SCORE = -3.0  # below any cosine minus frame penalty, so masked-out arts rank last
+
+
 class SearchGraph(nn.Module):
     """`index.frame_similarities` + top-k over a fixed gallery: every art is scored against the
-    query cut for its own frame, minus the frame prior for rare frames."""
+    query cut for its own frame, minus the frame prior for rare frames.
+
+    With a `mask` (float32, one value per gallery art in arts.json order) only arts whose value
+    is > 0 compete; the rest score EXCLUDED_SCORE. Exported with `--search-mask`, the graph takes
+    the mask as a second, required input; a client that wants the whole gallery feeds ones."""
 
     def __init__(self, embeddings: np.ndarray, frames: np.ndarray, penalties: np.ndarray, k: int, dtype: torch.dtype = torch.float16):
         super().__init__()
@@ -204,8 +212,10 @@ class SearchGraph(nn.Module):
         self.register_buffer("penalties", torch.as_tensor(penalties, dtype=torch.float32))
         self.k = k
 
-    def forward(self, embeddings: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, embeddings: torch.Tensor, mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         sims = self.gallery.to(torch.float32) @ embeddings.T  # (N, F)
         scores = sims.gather(1, self.frames)[:, 0] - self.penalties
+        if mask is not None:
+            scores = torch.where(mask > 0, scores, torch.full_like(scores, EXCLUDED_SCORE))
         top = torch.topk(scores, self.k)
         return top.indices, top.values

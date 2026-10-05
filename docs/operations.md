@@ -19,6 +19,7 @@ Both apps start from the same `models/` weights but get their own model. Each ap
 | `CARDID_CHECKPOINT`, `CARDID_DETECTOR` | extra search hints for starting checkpoints (default `models/`) |
 | `CARDID_DETECTOR_EPOCHS`, `CARDID_SCENE_PROFILE` | also fine-tune the detector, on `table` or `phone` scenes |
 | `CARDID_RETRAIN_EPOCHS`, `CARDID_WORKERS` | recogniser epochs (default 4) and loader workers |
+| `CARDID_SEARCH_MASK` | `1`: export `search.onnx` with the gallery `mask` input (ManaVault only; The Gathering feeds only `embeddings`) |
 
 The ManaVault profile also fine-tunes the detector on phone scenes: one large, near-upright card
 on a stand-like background, stronger keystone, foil glare, defocus and the app's dark padding

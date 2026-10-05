@@ -17,12 +17,46 @@ retraining.
 Scryfall's `art_crop` is a fixed template per card frame, so the query side cuts the same
 templates out of the warped card. `detect.FRAMES` holds the boxes, measured by template-matching
 art crops back into card scans: modern, the 1993/1997 frame, extended art, the tall art of
-full-art basics and most tokens, the half-width art of sagas (right) and class/case cards (left),
-plus the eight two-part regions below. Every query embeds all cuts in one batch, and each gallery
-art is scored against the cut for its own frame (`index.frame_similarities`). The rare frames
-(tall, saga, class and the two-part regions) pay `detect.FRAME_PENALTY` (0.02), because at webcam
+full-art basics and older tokens, the half-width art of sagas (right) and class/case cards (left),
+the eight two-part regions below and the two token frames after them. Every query embeds all cuts
+in one batch, and each gallery art is scored against the cut for its own frame
+(`index.frame_similarities`). The rare frames (tall, token_tall, saga, class and the two-part
+regions) pay `detect.FRAME_PENALTY` (0.02), because at webcam
 quality they otherwise beat the true card by a hair. `--frame-penalty 0` on `evaluate` or
 `capture` turns it off.
+
+### Token frames
+
+Scryfall's current token `art_crop` (684×570 or 684×722 px, about 60% of token arts) is wider than
+any card's art box: 4.1–95.9% of the card's width from 11.5% down. By aspect alone it used to be
+filed as `old` (1.20) or `tall` (0.947), whose cuts cover only about 65% and 83% of it, so a
+token's true score on a clean scan was ~0.1 lower than an ordinary card's (0.88 against 0.99). `frame_of` now gives token layouts
+the `token` frame (aspect 1.1–1.3, which also fits the older 630×550 and 613×498 templates better
+than `old`) and `token_tall` (aspect 0.94–0.96). Older 0.92–0.93 templates stay `tall`, and
+modern-frame double-faced tokens (1.37) stay `modern`. Both frames are appended after the two-part
+ones, so a bundle's F grows from 14 to 16; `token_tall` pays the frame penalty like `tall`, and
+`token` pays none, like `old`. The gallery embeddings do not change, only the query cuts.
+
+Re-scoring the `retrain-20261005T145643894996Z` ManaVault bundle with these cuts (same weights,
+fake quads so its embed graph cuts the token box) on 200 random token scans and 260 other cards
+rendered as phone scenes raised token top-1 from 0.81 to 0.87 and the true token score from 0.75
+to 0.82. Other cards were unchanged (0.913).
+
+### Hub arts
+
+The same experiment showed why tokens went to Funeral Room: its `room_0` half is a hub. The
+`room_0` cut of an ordinary card is a sideways strip of art and text box, and these strips look
+alike from card to card. Funeral Room's art sits nearest their centre: it was in the top 5 for
+12% of all queries (a typical art: 0.007%), and its mean top-10 similarity to other cards' cuts
+was the highest of all 51k arts (0.69 against a median of 0.33). Ruin (`aftermath_1`) and a few
+sagas and class cards are smaller hubs. The flat 0.02 penalty does not offset a hub that strong.
+It used to win only when the true score was low, which describes tokens under the old cuts and
+upside-down detections. Tokens were also read upside down more often (5% of phone scenes,
+against 0.5% for other cards), and then the cuts land on aftermath hubs such as Road.
+A CSLS-style correction was tried offline: subtract a quarter of each art's mean top-10
+similarity to 230 other cards' cuts, above the median. It cut Funeral Room's top-5 rate from 14%
+to 3% and raised top-1 by 0.5–1 point; half removed it entirely. It needs full card scans at
+export and a held-out real-capture check, so it is not implemented.
 
 ## Gallery
 
@@ -105,11 +139,21 @@ the predicted rectangle 90° off. Labelled real captures with trusted outlines m
 |---|---|
 | `detector.onnx` | uint8 RGBA 256×256 window → `quad` (4×2, printed order), `up`, `centre`, `short` side; rotations, snapping and the up vote run inside the graph |
 | `embed.onnx` | uint8 RGBA scene (any H×W) + quad → F×128 embeddings, one per frame cut; the warp is a `GridSample`, so no OpenCV in the browser |
-| `search.onnx` | frames + embeddings → top-k gallery indices and cosine scores; the gallery (f16 by default) and frame penalty are baked in |
+| `search.onnx` | `embeddings` (F×128) [+ `mask`] → `indices`, `scores`: top-k gallery indices and cosine scores; the gallery (f16 by default), per-art frames and frame penalty are baked in |
 | `arts.json` | gallery order → `id`, `name`, `set`, `collector_number`, `layout`, `face`, `lang`, `frame`, `illustration_id`, crop `url`, `printing_count` |
 | `printings.json` | representative ID → all selectable sibling printings; large, fetched only on the first search or printing expansion |
-| `manifest.json` | version, checkpoint SHA256s, gallery size, every constant the glue code needs (from `cardid/constants.py`), per-file bytes and SHA256 |
+| `manifest.json` | version, checkpoint SHA256s, `gallery` (arts, dtype, embed_dim, frame_penalty, topk), every constant the glue code needs (from `cardid/constants.py`, with `frame_names`), `search_mask`, per-file bytes and SHA256 |
 | `SHA256SUMS` | what `publish` and the servers verify |
+
+**Search mask.** Exported with `--search-mask` (or `CARDID_SEARCH_MASK=1`, set in the ManaVault
+profile), `search.onnx` takes a second required input after `embeddings`: `mask`, float32 of
+shape `[N]` with N = `gallery.arts`, in `arts.json` order. Arts with a value above 0 compete; the
+rest score −3 (`graphs.EXCLUDED_SCORE`, below any real score) before top-k. Ones reproduce the
+unmasked graph exactly, and a client filters, for example tokens only, by setting ones where
+`arts[i].layout` is `token` or `double_faced_token`. When fewer than k arts are kept, the extra
+results have score −3 and should be dropped. The manifest's `search_mask` (`true`/`false`, absent in
+older bundles) says which graph a bundle has, and so do the session's input names. Without the
+flag the graph keeps its single `embeddings` input, which The Gathering feeds.
 
 Export ends with a parity check (`--verify N`, default 64): it renders N synthetic scenes and
 fails unless torch and onnxruntime agree on corners (median under 1 px) and on top-1 for ≥97% of
@@ -117,7 +161,7 @@ scenes where torch's top-1 leads by more than 0.02. Never hand-edit a published 
 under a new version.
 
 `cardid.bundle` is the onnxruntime reference runtime and the spec both apps port
-(`recognition/pipeline.ts`): `uv run python -m cardid.bundle data/bundles/<version> --image
+(`recognition/pipeline.ts`); `Bundle.rank(embeddings, mask)` feeds ones when the graph takes a mask: `uv run python -m cardid.bundle data/bundles/<version> --image
 frame.jpg --click 660,350` prints the top 5 and per-stage timings. Its docstring describes the
 glue around the three graphs. `cardid/test_manifest_contract.py` checks the manifest against the
 apps' TypeScript in sibling checkouts (or `CARDID_CONSUMERS`).
