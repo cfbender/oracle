@@ -112,9 +112,13 @@ The largest penalties went to Case of the Burning Masks and Funeral Room (0.077)
 - Duplicate illustrations from older galleries stay as rows marked `alias_of`; only one
   embedding per illustration is exported. A held-out row wins over a training row so shared art
   cannot leak into training.
-- Rows a newer rule rejects (playtest/sketch cards, decklists, bios and other bare `Card` inserts)
-  stay with `"excluded": true` so nothing renumbers, and are dropped from training, evaluation,
-  downloads and export. Their near-textureless art otherwise matched everything.
+- Rows a newer rule rejects stay with `"excluded": true` so nothing renumbers, and are dropped
+  from training, evaluation, downloads and export. Their near-textureless art otherwise matched
+  everything. The rule covers playtest/sketch cards, and cards with a face typed as the bare word
+  `Card` that are not game pieces: memorabilia (decklists, bios, ads), minigames, checklists and
+  the double-faced substitute. Bare-`Card` helpers from token sets (On an Adventure, The Monarch,
+  City's Blessing, Day // Night, The Ring Tempts You) stay. A flagged row that becomes usable
+  again loses the flag and keeps its index and split.
 
 All downloads (`cardid.downloads`) are HTTPS-only, size-capped, content-type checked, validated
 and renamed into place, so an interrupted run leaves no partial file.

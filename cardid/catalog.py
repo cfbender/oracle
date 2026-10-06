@@ -15,6 +15,7 @@ from pathlib import Path
 ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "emblem", "adventure", "prepare", "meld"}
 FACE_LAYOUTS = {"transform", "modal_dfc", "reversible_card", "double_faced_token", "split", "flip"}
 TWO_PART_LAYOUTS = {"split", "flip"}
+NON_GAME_SET_TYPES = {"memorabilia", "minigame"}
 
 
 def layout_group(card: dict) -> str:
@@ -53,9 +54,15 @@ def hub_card(card: dict) -> bool:
 
     - Mystery Booster / Playtest sketch cards: `promo_types` contains `playtest`. Keyed on that
       rather than `set_type: funny`, which would also drop Unfinity's legal cards.
-    - Non-game inserts whose `type_line` is the bare word `Card`: World Championship decklists,
-      bios and ads, minigame cards. Real tokens keep their own type lines and stay."""
-    return "playtest" in card.get("promo_types", []) or card.get("type_line") == "Card"
+    - Non-game inserts with a face typed as the bare word `Card`: World Championship decklists,
+      bios and ads (memorabilia sets), minigames, checklists and the double-faced substitute.
+      Bare-`Card` game helpers from token sets stay: On an Adventure, The Monarch, City's
+      Blessing, Day // Night, The Ring Tempts You, Experience and the like are on tables."""
+    if "playtest" in card.get("promo_types", []):
+        return True
+    bare = any(part.strip() == "Card" for part in card.get("type_line", "").split("//"))
+    name = card.get("name", "")
+    return bare and (card.get("set_type") in NON_GAME_SET_TYPES or "Checklist" in name or "Substitute Card" in name)
 
 
 def art_faces(card: dict) -> list[tuple[int, dict]]:
@@ -159,12 +166,16 @@ def add_metadata(arts: list[dict], entries: list[dict], excluded: set[str] = fro
     shows and matches `collector_number` to pick one of a set's many Forests.
 
     Rows whose ID is in `excluded` are kept (so indices and splits of the others never move)
-    but flagged `excluded`, which `data.load_arts` and the downloaders skip."""
+    but flagged `excluded`, which `data.load_arts` and the downloaders skip. A flagged row that
+    is usable again (a rule was narrowed) loses the flag and keeps its index and split."""
     by_id = {p["id"]: (e, p) for e in entries for p in e["printings"]}
     changed = set()
     for a in arts:
         if a["id"] in excluded and not a.get("excluded"):
             a["excluded"] = True
+            changed.add(a["id"])
+        elif a.get("excluded") and a["id"] not in excluded and a["id"] in by_id:
+            del a["excluded"]
             changed.add(a["id"])
         match = by_id.get(a["id"])
         if not match:

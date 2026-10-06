@@ -57,7 +57,7 @@ class DetectorTwoPartTest(unittest.TestCase):
             {"image_uris": {"art_crop": "montage"}},
             {"card_faces": [{"name": "A"}] * 3},
             {"promo_types": ["playtest"]},
-            {"type_line": "Card"},
+            {"type_line": "Card", "set_type": "memorabilia"},
         ):
             self.assertEqual(scryfall.two_part_cards([printing("bad", **changes)]), [])
         entries = scryfall.two_part_cards(cards + cards)

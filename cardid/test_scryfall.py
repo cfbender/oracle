@@ -150,6 +150,38 @@ class ScryfallTest(unittest.TestCase):
         self.assertEqual(scryfall.add_metadata(old, entries, excluded), 0)
         self.assertEqual(len(scryfall.extend_to_all(old, entries, excluded)), 4)  # Unfinity is added, Bind is not re-added
 
+    def test_bare_card_game_helpers_stay_but_non_game_inserts_go(self):
+        # Type lines and set types from the real records.
+        helper = {**ABRADE, "layout": "token", "set_type": "token", "type_line": "Card"}
+        for name, set_type in [("On an Adventure", "token"), ("The Monarch", "masters"), ("Storm Counter", "box")]:
+            with self.subTest(name=name):
+                self.assertTrue(scryfall.usable({**helper, "name": name, "set_type": set_type}))
+        ring = {**JADZI, "layout": "double_faced_token", "set_type": "token", "name": "The Ring // The Ring Tempts You", "type_line": "Emblem // Card"}
+        self.assertTrue(scryfall.usable(ring))
+        self.assertTrue(scryfall.usable({**ring, "name": "Day // Night", "type_line": "Card // Card"}))
+        for card in [
+            {**helper, "name": "Innistrad Checklist"},
+            {**helper, "layout": "normal", "name": "Double-Faced Substitute Card"},
+            {**helper, "set_type": "memorabilia", "name": "1997 World Championships Ad"},
+            {**helper, "set_type": "minigame", "name": "Booster Blitz"},
+            {**ring, "set_type": "minigame", "name": "Strictly Better // Strictly Better (cont'd)", "type_line": "Card // Card"},
+        ]:
+            with self.subTest(name=card["name"]):
+                self.assertTrue(scryfall.hub_card(card))
+                self.assertFalse(scryfall.usable(card))
+
+        # Rows an older rule flagged come back with their index and split once usable again.
+        adventure = {**helper, "name": "On an Adventure", "illustration_id": "adventure-art"}
+        entries = self.entries([ABRADE, adventure])
+        old = [dict(entries[0], split="eval"), {"id": adventure["id"], "split": "train", "illustration_id": "adventure-art", "url": "x", "excluded": True}]
+        self.assertEqual(scryfall.add_metadata(old, entries, set()), 1)
+        self.assertEqual([scryfall.embeds(a) for a in old], [True, True])
+        self.assertEqual((old[1]["split"], old[1]["layout"]), ("train", "token"))
+        self.assertEqual(len(scryfall.extend_to_all(old, entries, set())), 2)  # not re-added as a new row
+        gone = [{"id": "retired", "split": "train", "illustration_id": "x", "url": "x", "excluded": True}]
+        scryfall.add_metadata(gone, entries, set())
+        self.assertTrue(gone[0]["excluded"])  # unknown to the bulk: stays retired
+
     def test_layouts_with_shared_crops_and_exclusions(self):
         for layout in ["prepare", "adventure", "meld"]:
             with self.subTest(layout=layout):
