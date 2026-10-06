@@ -54,7 +54,7 @@ Export also embeds every frame cut of up to 3000 scans in `data/cards` to comput
 Fine-tune from `models/` rather than ImageNet. InfoNCE alone beats adding the ArcFace head, which
 memorises the train split. `--real` mixes train-split captures into every epoch (repeated
 `--real-repeat` times, default 20, with light jitter) and picks `best.pt` by held-out real
-top-1. Token arts (`token`, `double_faced_token`) are ~3% of the gallery, so each gets
+top-1. Token arts (`token`, `double_faced_token`, `emblem`) are ~3% of the gallery, so each gets
 `--token-repeat` pairs per epoch (default 3, ~9% of the synthetic pairs, ~6% more steps; 1 turns
 it off). Copies keep their art index and get their own degradation. Both trainers take `--seed` and write `data/runs/<run>/run.json` with arguments, device and
 library versions. Each run writes `last.pt`, and `best.pt` when an epoch beats the start.

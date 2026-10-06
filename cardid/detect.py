@@ -54,10 +54,15 @@ FRAMES.update({name: box[:3] for name, box in TWO_PART_BOXES.items()})
 # low enough for hub arts (Funeral Room's room_0 half) to overtake it. Older token templates
 # (1.15, 1.23) are also closer to `token` than to `old`; 0.92-0.93 ones match `tall`.
 FRAMES.update({"token": (0.041, 0.115, 0.959), "token_tall": (0.041, 0.115, 0.959)})
-TOKEN_LAYOUTS = frozenset({"token", "double_faced_token"})
+# Emblems (Scryfall layout `emblem`, scanned as token fronts): 92 of 106 paper illustrations use a
+# 603x576 crop at x 0.098-0.908, y 0.119-0.674; 9 older ones a 602x605 crop at x 0.096-0.906,
+# y 0.143-0.725, which this box covers better than `tall` does (IoU 0.87 against 0.75); 5 use
+# the 684x570 token template and get `token`.
+FRAMES["emblem"] = (0.098, 0.119, 0.908)
+TOKEN_LAYOUTS = frozenset({"token", "double_faced_token", "emblem"})
 FRAME_NAMES = list(FRAMES)
 # representative art aspect (width / height) per frame, for the query-side cut
-FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415, "token": 1.2, "token_tall": 0.947}
+FRAME_ASPECT = {"modern": 1.37, "old": 1.24, "extended": 1.62, "tall": 0.88, "right": 0.415, "left": 0.415, "token": 1.2, "token_tall": 0.947, "emblem": 1.047}
 # Counter-clockwise quarter turns from printed scan to upright gallery art.
 FRAME_ROTATIONS = {"room_0": 3, "room_1": 3, "split_0": 3, "split_1": 3, "aftermath_1": 1, "flip_1": 2}
 for _name, (_x0, _y0, _x1, _y1) in TWO_PART_BOXES.items():
@@ -68,7 +73,7 @@ HALF_LEFT_LAYOUTS = {"class", "case"}
 # an ordinary card are extra lottery tickets: a full-art Plains or a saga beat the truth by 0.01 in
 # real evals while, on clean scans, no rare-frame impostor comes close. Rare-frame candidates must
 # therefore beat the standard-frame ones by this margin (subtracted from their similarity).
-RARE_FRAMES = frozenset({"tall", "token_tall", "right", "left", *TWO_PART_BOXES})
+RARE_FRAMES = frozenset({"tall", "token_tall", "emblem", "right", "left", *TWO_PART_BOXES})
 FRAME_PENALTY = 0.02
 
 
@@ -85,11 +90,14 @@ def frame_of(aspect: float, layout: str | None = None, face: int = 0, layout_gro
     cards on the left; without a layout assume saga, they outnumber the others 5:1).
     DFC sides are classified independently: ordinary transform/MDFC backs (~1.37) are
     modern, not half-width; showcase/extended/token faces still use their own aspect. Tokens
-    whose aspect is one of the wide token templates' get the `token`/`token_tall` frames."""
+    whose aspect is one of the wide token templates' get the `token`/`token_tall` frames;
+    emblems with a near-square crop get `emblem`."""
     if layout in {"split", "flip"}:
         return f"{layout_group or layout}_{face}"
     if aspect < 0.6:
         return "left" if layout in HALF_LEFT_LAYOUTS else "right"
+    if layout == "emblem" and 0.97 <= aspect < 1.1:
+        return "emblem"
     if layout in TOKEN_LAYOUTS and 0.94 <= aspect < 0.96:
         return "token_tall"
     if aspect < 1.1:

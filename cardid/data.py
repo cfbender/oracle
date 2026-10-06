@@ -77,7 +77,7 @@ def worker_init(_worker_id: int) -> None:
     np.random.seed(seed)
 
 
-# Tokens are ~3% of the gallery, so with one pair per art they were ~3% of the training pairs.
+# Tokens (with emblems, scanned as token fronts) are ~3% of the gallery, so with one pair per art they were ~3% of the training pairs.
 # Three copies per epoch make them ~9% for ~6% more steps (see docs/training.md).
 TOKEN_REPEAT = 3
 

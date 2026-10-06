@@ -72,15 +72,16 @@ TOKEN_ARTS = [
     {"id": "b"},  # older arts.json rows may have no layout
     {"id": "d", "layout": "double_faced_token"},
     {"id": "s", "layout": "split"},
+    {"id": "e", "layout": "emblem"},
 ]
 
 
 class TokenOversamplingTest(unittest.TestCase):
     def test_pair_order_repeats_only_token_layouts(self):
-        self.assertEqual(data.pair_order(TOKEN_ARTS, 1).tolist(), [0, 1, 2, 3, 4])
-        self.assertEqual(data.pair_order(TOKEN_ARTS, 3).tolist(), [0, 1, 1, 1, 2, 3, 3, 3, 4])
+        self.assertEqual(data.pair_order(TOKEN_ARTS, 1).tolist(), [0, 1, 2, 3, 4, 5])
+        self.assertEqual(data.pair_order(TOKEN_ARTS, 3).tolist(), [0, 1, 1, 1, 2, 3, 3, 3, 4, 5, 5, 5])
         self.assertEqual(data.TOKEN_REPEAT, 3)
-        self.assertEqual(len(data.PairDataset(TOKEN_ARTS)), 9)  # the default oversamples
+        self.assertEqual(len(data.PairDataset(TOKEN_ARTS)), 12)  # the default oversamples
         with self.assertRaises(ValueError):
             data.pair_order(TOKEN_ARTS, 0)
 
@@ -99,7 +100,7 @@ class TokenOversamplingTest(unittest.TestCase):
         ):
             dataset = data.PairDataset(TOKEN_ARTS, token_repeat=2)
             items = [dataset[i] for i in range(len(dataset))]
-        self.assertEqual([label for _, _, label in items], [0, 1, 1, 2, 3, 3, 4])
+        self.assertEqual([label for _, _, label in items], [0, 1, 1, 2, 3, 3, 4, 5, 5])
         # each copy is the token's own image, augmented with a different draw
         for clean, _, label in items:
             np.testing.assert_array_equal(clean.numpy(), data.to_tensor(images[TOKEN_ARTS[label]["id"]][:16, :16]).numpy())

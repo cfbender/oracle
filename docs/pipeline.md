@@ -34,13 +34,22 @@ token's true score on a clean scan was ~0.1 lower than an ordinary card's (0.88 
 the `token` frame (aspect 1.1–1.3, which also fits the older 630×550 and 613×498 templates better
 than `old`) and `token_tall` (aspect 0.94–0.96). Older 0.92–0.93 templates stay `tall`, and
 modern-frame double-faced tokens (1.37) stay `modern`. Both frames are appended after the two-part
-ones, so a bundle's F grows from 14 to 16; `token_tall` pays the frame penalty like `tall`, and
+ones, so a bundle's F grows from 14 to 16 (17 with `emblem`, below); `token_tall` pays the frame penalty like `tall`, and
 `token` pays none, like `old`. The gallery embeddings do not change, only the query cuts.
 
 Re-scoring the `retrain-20261005T145643894996Z` ManaVault bundle with these cuts (same weights,
 fake quads so its embed graph cuts the token box) on 200 random token scans and 260 other cards
 rendered as phone scenes raised token top-1 from 0.81 to 0.87 and the true token score from 0.75
 to 0.82. Other cards were unchanged (0.913).
+
+Emblems (layout `emblem`, which ManaVault scans as token fronts) have their own crop templates,
+measured by template-matching all 106 distinct paper emblem illustrations into their scans. 92
+are 603×576 (aspect 1.047) at x 0.098–0.908, y 0.119–0.674; 9 older ones are 602×605 (0.995) at
+x 0.096–0.906, y 0.143–0.725; 5 use the 684×570 token template. By aspect alone the first two
+would be `tall`, which covers them poorly (IoU 0.72 and 0.75). Emblems with an aspect of
+0.97–1.1 get the `emblem` frame (the 603×576 box; IoU 0.87 for the older template), appended
+after `token_tall` and penalised like `tall`; the rest follow the token rules. Emblems count as
+tokens for `--token-repeat`.
 
 ### Hub arts
 
@@ -92,8 +101,9 @@ The largest penalties went to Case of the Burning Masks and Funeral Room (0.077)
   Scryfall frame, frame effects and promo flag. Identical art cannot tell printings or languages
   apart, so the app shows the representative and the user picks a sibling. Searches accept
   `set:3ed`, `#40` and `lang:en`.
-- Layouts: normal, leveler, saga, class, case, mutate, prototype, token, adventure, prepare and
-  meld have one art. Transform, modal DFC, reversible and double-faced tokens contribute one
+- Layouts: normal, leveler, saga, class, case, mutate, prototype, token, emblem, adventure,
+  prepare and meld have one art. An emblem that reuses its planeswalker's `illustration_id`
+  (9 of 105) is keyed `<illustration_id>:emblem`, so it keeps its own crop and `emblem` row. Transform, modal DFC, reversible and double-faced tokens contribute one
   entry per face with its own art crop. Split (Rooms, classic split, aftermath) and flip cards
   contribute one region per half. Art series, battles and three- or five-part novelty splits are
   excluded.
@@ -173,7 +183,7 @@ profile), `search.onnx` takes a second required input after `embeddings`: `mask`
 shape `[N]` with N = `gallery.arts`, in `arts.json` order. Arts with a value above 0 compete; the
 rest score −3 (`graphs.EXCLUDED_SCORE`, below any real score) before top-k. Ones reproduce the
 unmasked graph exactly, and a client filters, for example tokens only, by setting ones where
-`arts[i].layout` is `token` or `double_faced_token`. When fewer than k arts are kept, the extra
+`arts[i].layout` is `token`, `double_faced_token` or `emblem`. When fewer than k arts are kept, the extra
 results have score −3 and should be dropped. The manifest's `search_mask` (`true`/`false`, absent in
 older bundles) says which graph a bundle has, and so do the session's input names. Without the
 flag the graph keeps its single `embeddings` input, which The Gathering feeds.

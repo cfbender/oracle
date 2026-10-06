@@ -7,7 +7,7 @@
 each epoch (oversampled `--real-repeat` times, lightly augmented), and the best checkpoint is
 then chosen by top-1 on usable held-out real captures, or synthetic queries if none exist.
 
-Token arts (`token`, `double_faced_token` layouts) are ~3% of the gallery; `--token-repeat`
+Token arts (`token`, `double_faced_token` and `emblem` layouts) are ~3% of the gallery; `--token-repeat`
 (default 3) gives each of them that many pairs per epoch so they are ~9% of the synthetic pairs.
 
 Checkpoints to data/runs/<run>/{last,best}.pt; "best" is by eval top-1 on a fixed query set

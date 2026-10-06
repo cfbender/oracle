@@ -179,7 +179,7 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(frame_of(684 / 570, "normal"), "old")
         self.assertEqual(frame_of(684 / 722, "normal"), "tall")
         # appended, so the indices of the frames older bundles know do not move
-        self.assertEqual(FRAME_NAMES[-2:], ["token", "token_tall"])
+        self.assertEqual(FRAME_NAMES[-3:], ["token", "token_tall", "emblem"])
         np.testing.assert_allclose(frame_box("token"), (0.041, 0.115, 0.959, 0.115 + 0.918 * CARD_W / 1.2 / CARD_H))
         np.testing.assert_allclose(frame_box("token_tall"), (0.041, 0.115, 0.959, 0.115 + 0.918 * CARD_W / 0.947 / CARD_H))
         self.assertNotIn("token", RARE_FRAMES)  # filed as `old` before, which had no penalty

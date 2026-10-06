@@ -11,8 +11,8 @@ import json
 import random
 from pathlib import Path
 
-# Tokens also end up on tables. Art series and landscape battles remain excluded.
-ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "adventure", "prepare", "meld"}
+# Tokens and emblems also end up on tables. Art series and landscape battles remain excluded.
+ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "emblem", "adventure", "prepare", "meld"}
 FACE_LAYOUTS = {"transform", "modal_dfc", "reversible_card", "double_faced_token", "split", "flip"}
 TWO_PART_LAYOUTS = {"split", "flip"}
 
@@ -110,6 +110,11 @@ def usable_entries(bulk: Path, excluded: set[str] | None = None) -> list[dict]:
                     # plus region. A translation cannot collapse or duplicate a half.
                     shared = card.get("illustration_id") or face.get("illustration_id") or card["id"]
                     illustration = f"{shared}:face:{face_index}"
+                elif layout == "emblem":
+                    # Some emblems reuse their planeswalker's illustration ID but print a
+                    # different crop. Keep them as their own `emblem` row (ManaVault scans
+                    # them as token fronts), not as siblings of the card's row.
+                    illustration = f"{illustration}:emblem"
                 group = groups.setdefault(illustration, {"printings": [], "art": None})
                 group["printings"].append(printing)
                 url = face_image_url(card, face)

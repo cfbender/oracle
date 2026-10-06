@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from . import scryfall
-from .detect import frame_of
+from .data import pair_order
+from .detect import FRAME_NAMES, RARE_FRAMES, frame_box, frame_of
 from .gallery import runtime_metadata
 
 ABRADE = {
@@ -157,6 +158,55 @@ class ScryfallTest(unittest.TestCase):
             with self.subTest(layout=layout):
                 self.assertFalse(scryfall.usable({**ABRADE, "layout": layout}))
                 self.assertFalse(scryfall.usable({**JADZI, "layout": layout}))
+
+    def test_emblems_are_one_art_token_fronts_with_their_own_frame(self):
+        # Fields from the real record of Ajani, Adversary of Tyrants Emblem (tm19 15).
+        emblem = {
+            **ABRADE,
+            "id": "66666666-6666-6666-6666-666666666666",
+            "name": "Ajani, Adversary of Tyrants Emblem",
+            "set": "tm19",
+            "collector_number": "15",
+            "layout": "emblem",
+            "lang": "en",
+            "type_line": "Emblem — Ajani",
+            "frame": "2015",
+            "border_color": "black",
+            "illustration_id": "ajani-emblem-art",
+        }
+        self.assertTrue(scryfall.usable(emblem))
+        self.assertFalse(scryfall.hub_card(emblem))
+        self.assertFalse(scryfall.usable({**emblem, "games": ["arena"]}))
+        entries = self.entries([emblem, {**emblem, "id": "77777777-7777-7777-7777-777777777777", "lang": "de"}])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual((entries[0]["layout"], entries[0]["face"], entries[0]["url"]), ("emblem", 0, emblem["image_uris"]["art_crop"]))
+        self.assertEqual(len(entries[0]["printings"]), 2)
+        arts, _ = runtime_metadata(entries, ["emblem"])
+        self.assertEqual(arts[0]["layout"], "emblem")  # what ManaVault's tokens mode keys on
+
+        # Elspeth, Sun's Champion's emblem shares the planeswalker's illustration_id. It stays
+        # its own row instead of a printing sibling of the card, also in an existing arts.json.
+        walker = {**ABRADE, "name": "Elspeth, Sun's Champion", "illustration_id": "ajani-emblem-art"}
+        entries = self.entries([walker, emblem])
+        self.assertEqual([(e["layout"], len(e["printings"])) for e in entries], [("normal", 1), ("emblem", 1)])
+        self.assertEqual(entries[1]["illustration_id"], "ajani-emblem-art:emblem")
+        existing = [dict(entries[0], split="eval")]
+        extended = scryfall.extend_to_all(existing, entries)
+        self.assertEqual([(a["layout"], a["split"]) for a in extended], [("normal", "eval"), ("emblem", "train")])
+        self.assertEqual([p["id"] for p in extended[0]["printings"]], [ABRADE["id"]])
+
+        # Scryfall's emblem art_crop sizes: 603x576 (2015 frame), 602x605 (2003), 684x570.
+        self.assertEqual(frame_of(603 / 576, "emblem"), "emblem")
+        self.assertEqual(frame_of(602 / 605, "emblem"), "emblem")
+        self.assertEqual(frame_of(684 / 570, "emblem"), "token")
+        self.assertEqual(frame_of(603 / 576, "normal"), "tall")
+        self.assertEqual(frame_of(603 / 576, "token"), "tall")
+        self.assertEqual(FRAME_NAMES[-1], "emblem")
+        x0, y0, x1, y1 = frame_box("emblem")
+        self.assertEqual((x0, y0, x1), (0.098, 0.119, 0.908))
+        self.assertAlmostEqual(y1, 0.674, delta=0.004)  # template-matched bottom edge
+        self.assertIn("emblem", RARE_FRAMES)
+        self.assertEqual(pair_order([{"layout": "emblem"}, {"layout": "normal"}], 3).tolist(), [0, 0, 0, 1])
 
     def test_all_separate_side_layouts_and_missing_front_do_not_renumber_back(self):
         for layout in ["transform", "modal_dfc", "reversible_card", "double_faced_token"]:
