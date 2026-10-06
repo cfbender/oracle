@@ -11,6 +11,8 @@ import json
 import random
 from pathlib import Path
 
+from .detect import TOKEN_LAYOUTS
+
 # Tokens and emblems also end up on tables. Art series and landscape battles remain excluded.
 ART_LAYOUTS = {"normal", "leveler", "saga", "class", "case", "mutate", "prototype", "token", "emblem", "adventure", "prepare", "meld"}
 FACE_LAYOUTS = {"transform", "modal_dfc", "reversible_card", "double_faced_token", "split", "flip"}
@@ -54,15 +56,19 @@ def hub_card(card: dict) -> bool:
 
     - Mystery Booster / Playtest sketch cards: `promo_types` contains `playtest`. Keyed on that
       rather than `set_type: funny`, which would also drop Unfinity's legal cards.
-    - Non-game inserts with a face typed as the bare word `Card`: World Championship decklists,
-      bios and ads (memorabilia sets), minigames, checklists and the double-faced substitute.
-      Bare-`Card` game helpers from token sets stay: On an Adventure, The Monarch, City's
-      Blessing, Day // Night, The Ring Tempts You, Experience and the like are on tables."""
+    - Cards with a face typed as the bare word `Card`, unless they are token-layout game helpers
+      (On an Adventure, The Monarch, City's Blessing, Day // Night, The Ring Tempts You). Even
+      those go when they are non-game inserts: memorabilia (World Championship decklists, bios,
+      ads), minigames, checklists and the double-faced substitute. Bare-`Card` cards with any
+      other layout (Experience, Poison Counter, Secret Lair's Red Mana) go too, matching
+      ManaVault's catalog import, which would otherwise not know the scanned card."""
     if "playtest" in card.get("promo_types", []):
         return True
-    bare = any(part.strip() == "Card" for part in card.get("type_line", "").split("//"))
+    if not any(part.strip() == "Card" for part in card.get("type_line", "").split("//")):
+        return False
     name = card.get("name", "")
-    return bare and (card.get("set_type") in NON_GAME_SET_TYPES or "Checklist" in name or "Substitute Card" in name)
+    non_game = card.get("set_type") in NON_GAME_SET_TYPES or "Checklist" in name or "Substitute Card" in name
+    return non_game or card.get("layout") not in TOKEN_LAYOUTS
 
 
 def art_faces(card: dict) -> list[tuple[int, dict]]:

@@ -115,9 +115,10 @@ The largest penalties went to Case of the Burning Masks and Funeral Room (0.077)
 - Rows a newer rule rejects stay with `"excluded": true` so nothing renumbers, and are dropped
   from training, evaluation, downloads and export. Their near-textureless art otherwise matched
   everything. The rule covers playtest/sketch cards, and cards with a face typed as the bare word
-  `Card` that are not game pieces: memorabilia (decklists, bios, ads), minigames, checklists and
-  the double-faced substitute. Bare-`Card` helpers from token sets (On an Adventure, The Monarch,
-  City's Blessing, Day // Night, The Ring Tempts You) stay. A flagged row that becomes usable
+  `Card` that are not token-layout game pieces: memorabilia (decklists, bios, ads), minigames,
+  checklists, the double-faced substitute, and bare-`Card` cards with any other layout
+  (Experience, Poison Counter, Red Mana), as in ManaVault's catalog import. Token-layout helpers
+  (On an Adventure, The Monarch, City's Blessing, Day // Night, The Ring Tempts You) stay. A flagged row that becomes usable
   again loses the flag and keeps its index and split.
 
 All downloads (`cardid.downloads`) are HTTPS-only, size-capped, content-type checked, validated

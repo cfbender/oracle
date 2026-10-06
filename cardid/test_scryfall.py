@@ -153,7 +153,7 @@ class ScryfallTest(unittest.TestCase):
     def test_bare_card_game_helpers_stay_but_non_game_inserts_go(self):
         # Type lines and set types from the real records.
         helper = {**ABRADE, "layout": "token", "set_type": "token", "type_line": "Card"}
-        for name, set_type in [("On an Adventure", "token"), ("The Monarch", "masters"), ("Storm Counter", "box")]:
+        for name, set_type in [("On an Adventure", "token"), ("The Monarch", "masters"), ("City's Blessing", "promo")]:
             with self.subTest(name=name):
                 self.assertTrue(scryfall.usable({**helper, "name": name, "set_type": set_type}))
         ring = {**JADZI, "layout": "double_faced_token", "set_type": "token", "name": "The Ring // The Ring Tempts You", "type_line": "Emblem // Card"}
@@ -164,6 +164,10 @@ class ScryfallTest(unittest.TestCase):
             {**helper, "layout": "normal", "name": "Double-Faced Substitute Card"},
             {**helper, "set_type": "memorabilia", "name": "1997 World Championships Ad"},
             {**helper, "set_type": "minigame", "name": "Booster Blitz"},
+            # normal-layout bare `Card`s: ManaVault's catalog does not import them either
+            {**helper, "layout": "normal", "name": "Experience"},
+            {**helper, "layout": "normal", "name": "Poison Counter"},
+            {**helper, "layout": "normal", "set_type": "box", "name": "Storm Counter"},
             {**ring, "set_type": "minigame", "name": "Strictly Better // Strictly Better (cont'd)", "type_line": "Card // Card"},
         ]:
             with self.subTest(name=card["name"]):
