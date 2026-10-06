@@ -38,11 +38,15 @@ from .model import Embedder
 SNAP_THRESHOLD = 0.3
 
 
-def _normalise(rgba_hwc: torch.Tensor) -> torch.Tensor:
+def _imagenet_stats() -> tuple[torch.Tensor, torch.Tensor]:
+    """ImageNet mean and std as (3,) tensors, for the graphs to hold as buffers: a tensor built
+    inside `forward` is a constant the tracer warns about."""
+    return torch.tensor(IMAGENET_MEAN, dtype=torch.float32), torch.tensor(IMAGENET_STD, dtype=torch.float32)
+
+
+def _normalise(rgba_hwc: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
     """uint8 HWC RGBA -> float CHW, ImageNet-normalised (what `data.to_tensor` does)."""
     x = rgba_hwc[..., :3].to(torch.float32) / 255.0
-    mean = torch.as_tensor(IMAGENET_MEAN).view(1, 1, 3)
-    std = torch.as_tensor(IMAGENET_STD).view(1, 1, 3)
     return ((x - mean) / std).permute(2, 0, 1)
 
 
@@ -126,9 +130,12 @@ class DetectorGraph(nn.Module):
         for _ in range(ROTATIONS - 1):
             unrot.append(unrot[-1] @ torch.tensor([[0.0, 1.0], [-1.0, 0.0]]))
         self.register_buffer("unrotate", torch.stack(unrot))  # (4, 2, 2)
+        mean, std = _imagenet_stats()
+        self.register_buffer("mean", mean)
+        self.register_buffer("std", std)
 
     def forward(self, window: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = _normalise(window)
+        x = _normalise(window, self.mean, self.std)
         views = [x]
         for _ in range(ROTATIONS - 1):
             views.append(_rot90(views[-1]))
@@ -144,7 +151,7 @@ class DetectorGraph(nn.Module):
 def square_to_quad(quad: torch.Tensor) -> torch.Tensor:
     """3x3 projective map from the unit square ((0,0), (1,0), (1,1), (0,1)) to the quad's
     corners in that order, in closed form (Heckbert, Fundamentals of Texture Mapping)."""
-    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = quad
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = (corner.unbind() for corner in quad.unbind())  # unbind: iterating a tensor upsets the tracer
     dx1, dx2, dx3 = x1 - x2, x3 - x2, x0 - x1 + x2 - x3
     dy1, dy2, dy3 = y1 - y2, y3 - y2, y0 - y1 + y2 - y3
     det = dx1 * dy2 - dx2 * dy1
@@ -168,6 +175,9 @@ class EmbedGraph(nn.Module):
         us = (torch.arange(CARD_W, dtype=torch.float32) / CARD_W)[None, :].expand(CARD_H, CARD_W)
         vs = (torch.arange(CARD_H, dtype=torch.float32) / CARD_H)[:, None].expand(CARD_H, CARD_W)
         self.register_buffer("uv1", torch.stack([us.flatten(), vs.flatten(), torch.ones(CARD_H * CARD_W)]))
+        mean, std = _imagenet_stats()
+        self.register_buffer("mean", mean.view(1, 3, 1, 1))
+        self.register_buffer("std", std.view(1, 3, 1, 1))
         self.boxes = [
             tuple(int(v) for v in (x0 * CARD_W, y0 * CARD_H, x1 * CARD_W, y1 * CARD_H)) for x0, y0, x1, y1 in (frame_box(frame) for frame in FRAME_NAMES)
         ]
@@ -189,9 +199,7 @@ class EmbedGraph(nn.Module):
                 crop = torch.flip(crop.transpose(2, 3), dims=(2,))
             crops.append(torch.round(nn.functional.interpolate(crop, size=(INPUT_SIZE, INPUT_SIZE), mode="bilinear", align_corners=False)))
         x = torch.cat(crops) / 255.0
-        mean = torch.as_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
-        std = torch.as_tensor(IMAGENET_STD).view(1, 3, 1, 1)
-        return self.embedder((x - mean) / std)
+        return self.embedder((x - self.mean) / self.std)
 
 
 EXCLUDED_SCORE = -3.0  # below any cosine minus frame penalty, so masked-out arts rank last

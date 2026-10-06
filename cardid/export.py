@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import time
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -87,17 +88,21 @@ def export_graph(
     # the exporter puts the module back into whatever mode it found it in, so a wrapper left in
     # its default train mode would drag the shared network (dropout, batch-norm) along with it
     module.eval()
-    torch.onnx.export(
-        module,
-        example,
-        str(path),
-        input_names=inputs,
-        output_names=outputs,
-        dynamic_axes=dynamic,
-        opset_version=OPSET,
-        dynamo=False,
-        do_constant_folding=fold,
-    )
+    # The legacy TorchScript exporter is deliberate: both apps load what it emits, and the
+    # torch.export-based one would change the graphs. Silence its deprecation notice only.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="You are using the legacy TorchScript-based ONNX export", category=DeprecationWarning)
+        torch.onnx.export(
+            module,
+            example,
+            str(path),
+            input_names=inputs,
+            output_names=outputs,
+            dynamic_axes=dynamic,
+            opset_version=OPSET,
+            dynamo=False,
+            do_constant_folding=fold,
+        )
     print(f"wrote {path.name} ({path.stat().st_size / 1e6:.1f} MB)")
 
 
