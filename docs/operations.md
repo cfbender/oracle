@@ -115,8 +115,9 @@ existing art IDs and splits, appends new illustrations as train, and downloads o
 `cardid.publish` ships an exported bundle. Retrain calls it; by hand:
 
 ```sh
-uv run python -m cardid.publish data/bundles/<version> --to user@host:/srv/the-gathering/cardid
+uv run python -m cardid.publish data/bundles/<version> --to github:cfbender/the-gathering
 uv run python -m cardid.publish data/bundles/<version> --to github:cfbender/manavault
+uv run python -m cardid.publish data/bundles/<version> --to user@host:/srv/the-gathering/cardid
 ```
 
 - **ssh / local directory:** verifies `SHA256SUMS`, streams a tarball into `<path>/.incoming`,
@@ -124,8 +125,9 @@ uv run python -m cardid.publish data/bundles/<version> --to github:cfbender/mana
   one becomes `previous`) and prunes versions beyond `--keep` (default 3). A failed transfer
   never touches `current`. The host needs `bash`, `flock`, `tar` and GNU coreutils.
 - **GitHub:** one release per bundle, tagged `scanner-bundle-<version>`, never marked latest
-  (ManaVault's Android shell uses the latest release for app updates). It refuses an existing
-  version and verifies uploaded sizes.
+  (ManaVault's Android shell and The Gathering's self-update use the latest release for app
+  updates). It refuses an existing version and verifies uploaded sizes. Both apps' servers
+  install the newest published release of their own repository at boot and every six hours.
 
 Versions are immutable; export each with a new `--version`. When ssh publishing fails, the
 reason is the `publish: ...` line just above `publish failed on <host>`: the version already

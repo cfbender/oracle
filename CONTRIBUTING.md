@@ -227,7 +227,7 @@ command pulls captures, fine-tunes, evaluates and publishes:
 ```sh
 mise run retrain-all  # both apps: pull captures, fine-tune, gate, publish
 mise run manavault    # only the phone scanner model → a scanner-bundle-* release on cfbender/manavault
-mise run gathering    # only the webcam table model → The Gathering's server
+mise run gathering    # only the webcam table model → a scanner-bundle-* release on cfbender/the-gathering
 mise run new-set      # a set released: refresh the gallery and ship it to both, no training
 ```
 
