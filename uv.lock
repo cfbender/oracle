@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and extra != 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm'",
@@ -86,7 +86,7 @@ version = "4.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
@@ -100,8 +100,8 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "imagehash" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnx" },
     { name = "onnxruntime" },
     { name = "opencv-python-headless" },
@@ -166,11 +166,11 @@ dev = [{ name = "ruff", specifier = ">=0.16.8" }]
 
 [[package]]
 name = "certifi"
-version = "2026.7.22"
+version = "2026.10.19"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz", hash = "sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55", size = 138112, upload-time = "2026-07-22T03:35:12.644Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598, upload-time = "2026-10-20T02:24:16.604Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/certifi-2026.7.22-py3-none-any.whl", hash = "sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775", size = 136983, upload-time = "2026-07-22T03:35:11.276Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072Z" },
 ]
 
 [[package]]
@@ -259,13 +259,13 @@ name = "imagehash"
 version = "4.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
-    { name = "pywavelets", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "pywavelets", version = "1.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "pywavelets", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "pywavelets", version = "1.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/de/5c0189b0582e21583c2a213081c35a2501c0f9e51f21f6a52f55fbb9a4ff/ImageHash-4.3.2.tar.gz", hash = "sha256:e54a79805afb82a34acde4746a16540503a9636fd1ffb31d8e099b29bbbf8156", size = 303190, upload-time = "2025-02-01T08:45:39.328Z" }
 wheels = [
@@ -363,8 +363,8 @@ name = "ml-dtypes"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/72/307d7c4bd0600601c7133fba5cb78af7db968152951c1cd473abb1cda782/ml_dtypes-0.6.0.tar.gz", hash = "sha256:5e60251d32ced5598972e4d5e06a2f044341f9291402551a3f6f0ec44f9299b0", size = 3032327, upload-time = "2026-08-13T14:14:40.215Z" }
 wheels = [
@@ -626,8 +626,8 @@ version = "1.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ml-dtypes" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "protobuf" },
     { name = "typing-extensions" },
 ]
@@ -659,8 +659,8 @@ version = "1.30.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "flatbuffers" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "packaging" },
     { name = "protobuf" },
 ]
@@ -696,8 +696,8 @@ name = "opencv-python-headless"
 version = "5.0.0.93"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz", hash = "sha256:b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c", size = 81817738, upload-time = "2026-07-02T07:01:06.039Z" }
 wheels = [
@@ -831,7 +831,7 @@ resolution-markers = [
     "python_full_version < '3.12' and extra != 'extra-6-cardid-cpu' and extra != 'extra-6-cardid-rocm'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5a/75/50581633d199812205ea8cdd0f6d52f12a624886b74bf1486335b67f01ff/pywavelets-1.9.0.tar.gz", hash = "sha256:148d12203377772bea452a59211d98649c8ee4a05eff019a9021853a36babdc8", size = 3938340, upload-time = "2025-08-04T16:20:04.978Z" }
 wheels = [
@@ -904,7 +904,7 @@ resolution-markers = [
     "python_full_version == '3.12.*' and extra != 'extra-6-cardid-cpu' and extra != 'extra-6-cardid-rocm'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/25/84/a9e80e33eb114e78bd2f1829a90d72d8d4d660109c721a8aa2f0d58d7592/pywavelets-1.10.0.tar.gz", hash = "sha256:f3cb8640225a8f3fdcbc3f6f3bd112c78927c9407cbfa65a5ff303990a6a3e32", size = 3948163, upload-time = "2026-09-07T17:15:15.637Z" }
 wheels = [
@@ -1052,7 +1052,7 @@ resolution-markers = [
     "python_full_version < '3.12' and extra != 'extra-6-cardid-cpu' and extra != 'extra-6-cardid-rocm'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -1137,7 +1137,7 @@ resolution-markers = [
     "python_full_version == '3.12.*' and extra != 'extra-6-cardid-cpu' and extra != 'extra-6-cardid-rocm'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7e/74/66de6258867beb2ef08f35f9f2ac017a52cacd5081714d239ff1a442d458/scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307", size = 30781235, upload-time = "2026-08-21T23:28:50.599Z" }
 wheels = [
@@ -1278,8 +1278,8 @@ dependencies = [
     { name = "filelock", marker = "sys_platform == 'darwin'" },
     { name = "fsspec", marker = "sys_platform == 'darwin'" },
     { name = "jinja2", marker = "sys_platform == 'darwin'" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version >= '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version < '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
     { name = "setuptools", marker = "sys_platform == 'darwin'" },
     { name = "sympy", marker = "sys_platform == 'darwin'" },
     { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
@@ -1308,8 +1308,8 @@ dependencies = [
     { name = "filelock", marker = "sys_platform != 'darwin'" },
     { name = "fsspec", marker = "sys_platform != 'darwin'" },
     { name = "jinja2", marker = "sys_platform != 'darwin'" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version >= '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version < '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
     { name = "setuptools", marker = "sys_platform != 'darwin'" },
     { name = "sympy", marker = "sys_platform != 'darwin'" },
     { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
@@ -1390,8 +1390,8 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version >= '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version < '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
     { name = "pillow", marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
 ]
@@ -1416,8 +1416,8 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'darwin'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version >= '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (python_full_version < '3.12' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm') or (sys_platform == 'darwin' and extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-6-cardid-cpu') or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
     { name = "pillow", marker = "sys_platform != 'darwin'" },
     { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
 ]
@@ -1450,7 +1450,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-6-cardid-cpu' and extra == 'extra-6-cardid-rocm')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
