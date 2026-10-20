@@ -1,5 +1,5 @@
 [tools]
-uv = "0.12.9"
+uv = "0.13.4"
 
 [tasks.retrain]
 description = "Pull corrections, fine-tune, evaluate, and publish card recognition."
