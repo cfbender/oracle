@@ -10,7 +10,7 @@ dependencies = [
     "onnx>=1.23.0",
     "onnxruntime>=1.30.0",
     "opencv-python-headless>=4.9",
-    "pillow>=10.3",
+    "pillow>=13.0",
     "tqdm>=4.66",
 ]
 
