@@ -1,10 +1,6 @@
 [tools]
 uv = "0.13.4"
 
-[tasks.retrain]
-description = "Pull corrections, fine-tune, evaluate, and publish card recognition."
-run = "uv run --no-sync python -m cardid.retrain"
-
 [tasks.evaluate]
 description = "Evaluate card recognition checkpoints."
 run = "uv run --no-sync python -m cardid.evaluate"

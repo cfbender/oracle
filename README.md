@@ -6,7 +6,7 @@ plus the gallery index. Two apps load the bundle with onnxruntime-web:
 
 | App | Uses it for | Bundles published to | Picked up |
 |---|---|---|---|
-| [The Gathering](https://github.com/cfbender/the-gathering) | click-to-identify on the webcam table | its server over ssh (`user@host:/srv/the-gathering/cardid`) | browsers on the next identification |
+| [The Gathering](https://github.com/cfbender/the-gathering) | click-to-identify on the webcam table | a `scanner-bundle-<version>` GitHub release, never marked latest | servers at boot and every 6 h; browsers on the next identification |
 | [ManaVault](https://github.com/cfbender/manavault) | the `/scan` card scanner | a `scanner-bundle-<version>` GitHub release, never marked latest | servers check every 6 h; browsers on the next scanner open |
 
 Each app has its own model, because a webcam over a table and a phone over one card are
@@ -36,7 +36,7 @@ One app at a time: `mise run gathering` or `mise run manavault`.
 git clone git@github.com:cfbender/oracle.git && cd oracle
 mise install && mise exec -- uv sync --extra rocm    # --extra cpu without an AMD GPU
 export UV_NO_SYNC=1                                  # keep the installed torch extra
-gh auth login                                        # needed to publish ManaVault releases
+gh auth login                                        # needed to publish both apps' releases
 mise run setup-profiles                              # creates ~/.config/cardid/{manavault,the-gathering}.env
 ${EDITOR:-nano} ~/.config/cardid/*.env               # fill in each server URL and token
 ```
